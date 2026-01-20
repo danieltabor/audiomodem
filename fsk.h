@@ -17,7 +17,6 @@
 typedef enum{
 	FSK_DEMOD_SEARCH,
 	FSK_DEMOD_ACQUIRE,
-	FSK_DEMOD_DETECTED,
 } fsk_demod_state_t;
 
 typedef struct {
@@ -43,6 +42,8 @@ typedef struct {
 	float     *demod_srcout;
 	size_t     demod_srcout_alloc;
 	size_t     demod_srcoutlen;
+	
+	size_t     demod_sync_skip;
 	
 	size_t     demod_bins;
 	fftw_plan  demod_plan;
@@ -118,16 +119,15 @@ fsk_t *fsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t tone
 	modem->demod_samp_per_sym = (double)(bandwidth*2) / modem->sym_freq;
 	if( modem->demod_samp_per_sym < modem->tone_count*6 ) { goto fsk_init_error; }
 	
-	
 	//Samplerate conveter
 	modem->demod_src = src_new(SRC_SINC_MEDIUM_QUALITY,1,0);
 	if( !modem->demod_src ) { goto fsk_init_error; }
 	//Make sure we are analyzing chunks small enough to guarantee that we
 	//will see a symbols for at least 2 clean ffts
-	modem->demod_srcin_alloc = modem->mod_samp_per_sym / 4;
+	modem->demod_srcin_alloc = modem->mod_samp_per_sym / 3;
 	modem->demod_srcin  = (float*)malloc(sizeof(float) * modem->demod_srcin_alloc);
 	if( !modem->demod_srcin ) { goto fsk_init_error; }
-	modem->demod_srcout_alloc = modem->demod_samp_per_sym / 4;
+	modem->demod_srcout_alloc = modem->demod_samp_per_sym / 3;
 	modem->demod_srcout = (float*)malloc(sizeof(float) * modem->demod_srcout_alloc);
 	if( !modem->demod_srcout ) { goto fsk_init_error; }
 	
@@ -191,12 +191,13 @@ void fsk_printinfo(fsk_t *modem) {
 	size_t i;
 	size_t j;
 	printf("Tone Modem:\n");
-	printf("  Verbose           :  %d\n",modem->verbose);
-	printf("  Samplerate        : %zu\n",modem->samplerate);
-	printf("  Bitrate           : %zu bps\n",modem->bitrate);
-	printf("  Bandwidth         : %zu Hz\n",modem->bandwidth);
-	printf("  Bits per Symbol   : %zu\n",modem->bit_per_tone);
-	printf("  Samples per Symbol: %zu\n",modem->mod_samp_per_sym);
+	printf("  Verbose                 :  %d\n",modem->verbose);
+	printf("  Samplerate              : %zu\n",modem->samplerate);
+	printf("  Bitrate                 : %zu bps\n",modem->bitrate);
+	printf("  Bandwidth               : %zu Hz\n",modem->bandwidth);
+	printf("  Bits per Symbol         : %zu\n",modem->bit_per_tone);
+	printf("  Samples per Symbol      : %zu\n",modem->mod_samp_per_sym);
+	printf("  Demod Samples per Symbol: %zu\n",modem->demod_samp_per_sym);
 	printf("  Tones(%zu):\n",modem->tone_count);
 	for( i=0; i<modem->tone_count; i++ ) {
 		printf("    0x%02lx: %04.1lf Hz\n",i,modem->tones[i]);
@@ -320,8 +321,31 @@ int fsk_demodulate(fsk_t *modem, uint8_t **data, size_t *datalen, double *sample
 		modem->demod_srcinlen  = modem->demod_srcinlen - src_data.input_frames_used;
 		modem->demod_srcoutlen = modem->demod_srcoutlen + src_data.output_frames_gen;
 		
+		//Skip samples to synchonize to a symbol
+		if( modem->demod_sync_skip ) {
+			if( modem->verbose ) {
+				printf("  Skip %zu of %zu samples\n",modem->demod_sync_skip,modem->demod_srcoutlen);
+			}
+			if( modem->demod_sync_skip >= modem->demod_srcoutlen ) {
+				//Skip everytihng currently in the srcout buffer
+				modem->demod_sync_skip = modem->demod_sync_skip - modem->demod_srcoutlen;
+				modem->demod_srcoutlen = 0;
+			}
+			else {
+				//Skip the first part of the srcout buffer
+				for( i=modem->demod_sync_skip; i<modem->demod_srcoutlen; i++ ) {
+					modem->demod_srcout[i-modem->demod_sync_skip] = modem->demod_srcout[i];
+				}
+				modem->demod_srcoutlen = modem->demod_srcoutlen - modem->demod_sync_skip;
+				modem->demod_sync_skip = 0;
+			}
+		}
+		
 		if( modem->demod_srcoutlen < modem->demod_srcout_alloc ) {
 			//Unable to perform one last FFT
+			if( modem->verbose ) {
+				printf("  Need more samples: %zu / %zu\n",modem->demod_srcoutlen,modem->demod_srcout_alloc);
+			}
 			continue;
 		}
 		
@@ -384,10 +408,9 @@ int fsk_demodulate(fsk_t *modem, uint8_t **data, size_t *datalen, double *sample
 				}
 			}
 			continue;
-		} else {
-			modem->demod_sync_loss = 0;
 		}
 		
+		modem->demod_sync_loss = 0;
 		if( modem->demod_state == FSK_DEMOD_SEARCH ) {
 			//First sample of a new data
 			modem->demod_state = FSK_DEMOD_ACQUIRE;
@@ -396,12 +419,16 @@ int fsk_demodulate(fsk_t *modem, uint8_t **data, size_t *datalen, double *sample
 		else if( modem->demod_state == FSK_DEMOD_ACQUIRE ) {
 			//Possible second sample of data
 			if( modem->demod_databin != maxbin ) {
-				//Not the data we expected
-				modem->demod_state = FSK_DEMOD_SEARCH;
+				//Not the data we expected, see if we get this one twice
+				modem->demod_state = FSK_DEMOD_ACQUIRE;
+				modem->demod_databin = maxbin;
 			}
 			else {
-				//Detected data
-				modem->demod_state = FSK_DEMOD_DETECTED;
+				//Detected data - reset state to look for next symbol
+				modem->demod_state = FSK_DEMOD_SEARCH;
+				//We were search every 0.25 symbols, now skip 0.5 symbols to catch the
+				//next symbol at the same place.
+				modem->demod_sync_skip  = modem->demod_samp_per_sym - (2*modem->demod_srcout_alloc);
 				sym = maxbin;
 				if( modem->verbose ) {
 					printf("  Found data 0x%02x\n",sym);
@@ -427,8 +454,6 @@ int fsk_demodulate(fsk_t *modem, uint8_t **data, size_t *datalen, double *sample
 			}
 		}
 		else {
-			//Either a subsequent sample of a detected data,
-			//or a spurious tone when searching for clock.
 		}
 
 	}

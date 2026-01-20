@@ -270,7 +270,7 @@ int main(int argc, char** argv) {
 				samples[ii] = 0.0;
 			}
 		} while(ii!=0);
-		samples_len = samples_len+samplerate;
+		samples_len = samples_len+2*samplerate;
 		
 		//Introduce noise
 		if( noise_amp ) {
