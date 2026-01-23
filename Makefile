@@ -1,12 +1,12 @@
 all: mod demod ratetest
 
-mod: mod.c bitops.h fskclk.h fsk.h compatmodem.h packetmodem.h
+mod: mod.c bitops.h fskclk.h fsk.h ook.h pkt.h audiomodem.h
 	gcc -g -o mod mod.c -lsndfile -lsamplerate -lfftw3 -lm
 
-demod: demod.c bitops.h fskclk.h fsk.h compatmodem.h packetmodem.h
+demod: demod.c bitops.h fskclk.h fsk.h ook.h pkt.h audiomodem.h
 	gcc -g -o demod demod.c -lsndfile -lsamplerate -lfftw3 -lm
 
-ratetest: ratetest.c bitops.h fskclk.h fsk.h compatmodem.h packetmodem.h
+ratetest: ratetest.c bitops.h fskclk.h fsk.h ook.h pkt.h audiomodem.h
 	gcc -g -o ratetest ratetest.c -lsndfile -lsamplerate -lfftw3 -lm
 
 clean:

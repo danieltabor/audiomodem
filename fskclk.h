@@ -243,7 +243,7 @@ int fskclk_modulate(fskclk_t *modem, double **samples, size_t *sampleslen, uint8
 	if( !data ) { return -1; }
 	
 	if( modem->verbose ) {
-		printf("tonemode_modulate(...):\n");
+		printf("fskclk_modulate(...):\n");
 		printf("  Data: ");
 		for( ii=0; ii<datalen; ii++ ) {
 			printf("%02x ",data[ii]);
@@ -262,7 +262,7 @@ int fskclk_modulate(fskclk_t *modem, double **samples, size_t *sampleslen, uint8
 	mod_sampleslen = modem->mod_samp_per_sym*symbol_count;
 	mod_samples = (double*)realloc(modem->mod_samples,sizeof(double)*mod_sampleslen);
 	if( !mod_samples ) {
-		goto fskclk_modulate_sync_error;
+		goto fskclk_modulate_error;
 	}
 	modem->mod_samples = mod_samples;
 	modem->mod_sampleslen = mod_sampleslen;
@@ -293,7 +293,7 @@ int fskclk_modulate(fskclk_t *modem, double **samples, size_t *sampleslen, uint8
 	*sampleslen = mod_sampleslen;
 	return 0;
 	
-	fskclk_modulate_sync_error:
+	fskclk_modulate_error:
 	*samples = 0;
 	*sampleslen = 0;
 	return -1;

@@ -8,24 +8,17 @@
 #include <time.h>
 
 #define BITOPS_IMPLEMENTATION
-#include "bitops.h"
-
 #define FSKCLK_IMPLEMENTATION
-#include "fskclk.h"
-
 #define FSK_IMPLEMENTATION
-#include "fsk.h"
-
-#define COMPATMODEM_IMPLEMENTATION
-#include "compatmodem.h"
-
-#define PACKETMODEM_IMPLEMENTATION
-#include "packetmodem.h"
-
+#define OOK_IMPLEMENTATION
+#define PKT_IMPLEMENTATION
+#define AUDIOMODEM_IMPLEMENTATION
+#include "audiomodem.h"
 
 #define DEFAULT_BITRATE 64
 #define DEFAULT_BANDWIDTH 3000
 #define DEFAULT_TONE_COUNT 4
+#define DEFAULT_FREQUENCY 1000
 #define DEFAULT_TEST_SIZE 512
 #define DEFAULT_NOISE_AMPLITUDE 0
 
@@ -37,12 +30,14 @@ void usage(char* cmd) {
 		}
 		filename--;
 	}
-	printf("Usage: %s [-h] [-v] [-p] [-clk] [-r start_bitrate] [-bw bandwidth] [-t tone_count] [-s test_size] [-n noise_amplitude]\n",filename);
+	printf("Usage: %s [-h] [-v] [-p] [-fsk | -fskclk | -ook] [-r start_bitrate] [-bw bandwidth] \n",filename);
+	printf("  [-t tone_count] [-f frequency] [-s test_size] [-n noise_amplitude]\n");
 	printf("\n");
 	printf("Defaults:\n");
 	printf("  start_bitrate: %d\n",DEFAULT_BITRATE);
 	printf("  bandwidth: %d\n",DEFAULT_BANDWIDTH);
 	printf("  tone_count: %d\n",DEFAULT_TONE_COUNT);
+	printf("  frequency: %d\n",DEFAULT_FREQUENCY);
 	printf("  test_size: %d\n",DEFAULT_TEST_SIZE);
 	printf("  noise_amplitude: %0.1lf\n",(double)DEFAULT_NOISE_AMPLITUDE);
 	printf("\n");
@@ -53,25 +48,22 @@ int main(int argc, char** argv) {
 	double *samples;
 	sf_count_t samples_len;
 	uint8_t *test_data = 0;
-	uint8_t *mod_data;
-	size_t   mod_size;
-	uint8_t *demod_data;
-	size_t  demod_size;
+	double  *ota_samples = 0;
+	size_t   ota_samples_len = 0;
 	uint8_t *comp_data;
 	size_t   comp_size;
-	compatmodem_t *modem = 0;
-	packetmodem_t *pkt = 0;
+	audiomodem_t *modem = 0;
 	size_t samplerate;
-	double *tmp;
 	size_t max_bitrate = 0;
 	size_t best_bitrate = 0;
 	size_t next_bitrate;
 	int verbose = 0;
 	int use_pkt = 0;
-	int use_clk = 0;
+	audiomodem_type_t modem_type = COMPAT_NONE;
 	size_t bitrate = 0;
 	size_t bandwidth = 0;
 	size_t tone_count = 0;
+	size_t frequency = 0;
 	size_t test_size = 0;
 	double noise_amp = -1;
 	int i = 1;
@@ -91,11 +83,23 @@ int main(int argc, char** argv) {
 			}
 			use_pkt = 1;
 		}
-		else if( !strcmp(argv[i],"-clk") ) {
-			if( use_clk ) {
+		else if( !strcmp(argv[i],"-fsk") ) {
+			if( modem_type != COMPAT_NONE ) {
 				usage(argv[0]);
 			}
-			use_clk = 1;
+			modem_type = COMPAT_FSK;
+		}
+		else if( !strcmp(argv[i],"-fskclk") ) {
+			if( modem_type != COMPAT_NONE ) {
+				usage(argv[0]);
+			}
+			modem_type = COMPAT_FSKCLK;
+		}
+		else if( !strcmp(argv[i],"-ook") ) {
+			if( modem_type != COMPAT_NONE ) {
+				usage(argv[0]);
+			}
+			modem_type = COMPAT_OOK;
 		}
 		else if( !strcmp(argv[i],"-r") ) {
 			++i;
@@ -127,6 +131,16 @@ int main(int argc, char** argv) {
 				usage(argv[0]);
 			}
 		}
+		else if( !strcmp(argv[i],"-f") ) {
+			++i;
+			if( i >= argc || frequency ) {
+				usage(argv[0]);
+			}
+			frequency = strtoul(argv[i],0,0);
+			if( !frequency ) {
+				usage(argv[0]);
+			}
+		}
 		else if( !strcmp(argv[i],"-s") ) {
 			++i;
 			if( i >= argc || test_size ) {
@@ -153,6 +167,9 @@ int main(int argc, char** argv) {
 		++i;
 	}
 
+	if( modem_type == COMPAT_NONE ) {
+		usage(argv[0]);
+	}
 	if( !bitrate ) {
 		bitrate = DEFAULT_BITRATE;
 	}
@@ -161,6 +178,9 @@ int main(int argc, char** argv) {
 	}
 	if( !tone_count ) {
 		tone_count = DEFAULT_TONE_COUNT;
+	}
+	if( !frequency ) {
+		frequency = DEFAULT_FREQUENCY;
 	}
 	if( !test_size ) {
 		test_size = DEFAULT_TEST_SIZE;
@@ -210,94 +230,79 @@ int main(int argc, char** argv) {
 	
 	for(;;) {
 		printf("Testing %zu bps  ",bitrate);
-		if( use_clk ) {
-			modem = compatmodem_fskclk_init(samplerate, bitrate, bandwidth, tone_count);
+		if( modem_type == COMPAT_FSKCLK ) {
+			modem = audiomodem_fskclk_init(samplerate, bitrate, bandwidth, tone_count);
 		}
-		else {
-			modem = compatmodem_fsk_init(samplerate, bitrate, bandwidth, tone_count);
+		else if( modem_type == COMPAT_FSK ) {
+			modem = audiomodem_fsk_init(samplerate, bitrate, bandwidth, tone_count);
+		}
+		else if( modem_type == COMPAT_OOK ) {
+			modem = audiomodem_ook_init(samplerate,bitrate,frequency);
 		}
 		if( !modem ) {
 			printf("Create modem ");
 			goto bitrate_failed;
 		}
-		if( verbose ) {
-			compatmodem_printinfo(modem);
-			compatmodem_set_verbose(modem,verbose);
-		}
 		if( use_pkt ) {
-			pkt = packetmodem_init(3);
-			if( !pkt ) {
-				printf("Create packetmodem ");
-				goto bitrate_failed;
-			}
-			if( packetmodem_tx(pkt,&mod_data,&mod_size,test_data,test_size) ) {
-				printf("Generate packet ");
+			if( audiomodem_pkt_init(modem) ) {
+				printf("Create packet framer ");
 				goto bitrate_failed;
 			}
 		}
-		else {
-			mod_data = test_data;
-			mod_size = test_size;
+		if( verbose ) {
+			audiomodem_printinfo(modem);
+			audiomodem_set_verbose(modem,verbose);
 		}
-		if( compatmodem_modulate(modem, &samples, &samples_len, mod_data, mod_size) ) {
+
+		if( audiomodem_modulate(modem, &samples, &samples_len, test_data, test_size) ) {
 			printf("Modulate audio ");
 			goto bitrate_failed;
 		}
 		
 		//Generate preceedeing and trailing silence (1 second each)
-		tmp = realloc(samples,sizeof(double)*(samples_len+2*samplerate));
-		if( !tmp ) {
+		ota_samples_len = samples_len+2*samplerate;
+		ota_samples = realloc(ota_samples,sizeof(double)*ota_samples_len);
+		if( !ota_samples ) {
 			printf("Memory allocation failure\n");
 			exit(0);
 		}
-		samples = tmp;
-		if( use_clk ) {
-			modem->fskclk->mod_samples = tmp;
+		
+		for( ii=0; ii<samples_len; ii++ ) {
+			ota_samples[ii] = samples[ii];
 		}
-		else {
-			modem->fsk->mod_samples = tmp;
+		for( ; ii < ota_samples_len; ii++ ) {
+			ota_samples[ii] = 0.0;
 		}
-		ii=(samples_len+2*samplerate);
-		do {
-			ii--;
-			if( ii > samples_len+samplerate ) {
-				samples[ii] = 0.0;
-			}
-			else if( ii > samplerate ) {
-				samples[ii] = samples[ii-samplerate];
-			}
-			else {
-				samples[ii] = 0.0;
-			}
-		} while(ii!=0);
-		samples_len = samples_len+2*samplerate;
+		/*
+		for( ii=0; ii<samplerate; ii++ ) {
+			ota_samples[ii] = 0.0;
+		}
+		for( ; ii<samplerate+samples_len; ii++ ) {
+			ota_samples[ii] = samples[ii-samplerate];
+		}
+		for( ; ii<ota_samples_len; ii++ ) {
+			ota_samples[ii] = 0.0;
+		}
+		*/
 		
 		//Introduce noise
 		if( noise_amp ) {
 			//printf("Inject noise\n");
-			for( ii=0; ii<samples_len; ii++ ) {
-				samples[ii] = samples[ii] + ((double)(random()-0x40000000) / 0x40000000)*noise_amp;
-				if( samples[ii] > 1.0 ) {
-					samples[ii] = 1.0;
+			for( ii=0; ii<ota_samples_len; ii++ ) {
+				double noise_sample = ((double)(random()-0x40000000) / 0x40000000)*noise_amp;
+				ota_samples[ii] = ota_samples[ii] + noise_sample;
+				if( ota_samples[ii] > 1.0 ) {
+					ota_samples[ii] = 1.0;
 				}
-				else if( samples[ii] < -1.0 ) {
-					samples[ii] = -1.0;
+				else if( ota_samples[ii] < -1.0 ) {
+					ota_samples[ii] = -1.0;
 				}
 			}
 		}
-		if( compatmodem_demodulate(modem, &demod_data, &demod_size, samples, samples_len) ) {
+		
+		if( audiomodem_demodulate(modem,&comp_data,&comp_size,ota_samples,ota_samples_len) ) {
 			printf("Demodulate audio ");
 			goto bitrate_failed;
-		}
-		if( use_pkt ) {
-			if( packetmodem_rx(pkt,&comp_data,&comp_size,demod_data,demod_size) ) {
-				printf("Receive packet ");
-				
-			}
-		}
-		else {
-			comp_data = demod_data;
-			comp_size = demod_size;
 		}
 		
 		if( test_size > comp_size ) {
@@ -310,15 +315,10 @@ int main(int argc, char** argv) {
 			}
 		}
 		
-		if( pkt ) {
-			packetmodem_destroy(pkt);
-			pkt = 0;
-		}
 		if( modem ) {
-			compatmodem_destroy(modem);
+			audiomodem_destroy(modem);
 			modem = 0;
 		}
-		
 		printf("OK\n");
 		if( bitrate > best_bitrate ) {
 			best_bitrate = bitrate;
@@ -334,12 +334,8 @@ int main(int argc, char** argv) {
 		goto next;
 		
 		bitrate_failed:
-		if( pkt ) {
-			packetmodem_destroy(pkt);
-			pkt = 0;
-		}
 		if( modem ) {
-			compatmodem_destroy(modem);
+			audiomodem_destroy(modem);
 			modem = 0;
 		}
 		printf("Failed\n");
@@ -356,6 +352,12 @@ int main(int argc, char** argv) {
 	
 	printf("Highest possible bitrate: %zu\n",best_bitrate);
 	
-	free(test_data);
+	if( test_data ) {
+		free(test_data);
+	}
+	if( ota_samples ) {
+		free(ota_samples);
+	}
+	
 	return 0;
 }

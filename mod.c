@@ -7,23 +7,17 @@
 #include <unistd.h>
 
 #define BITOPS_IMPLEMENTATION
-#include "bitops.h"
-
 #define FSKCLK_IMPLEMENTATION
-#include "fskclk.h"
-
 #define FSK_IMPLEMENTATION
-#include "fsk.h"
-
-#define COMPATMODEM_IMPLEMENTATION
-#include "compatmodem.h"
-
-#define PACKETMODEM_IMPLEMENTATION
-#include "packetmodem.h"
+#define OOK_IMPLEMENTATION
+#define PKT_IMPLEMENTATION
+#define AUDIOMODEM_IMPLEMENTATION
+#include "audiomodem.h"
 
 #define DEFAULT_BITRATE 64
 #define DEFAULT_BANDWIDTH 3000
 #define DEFAULT_TONE_COUNT 4
+#define DEFAULT_FREQUENCY 1000
 
 void usage(char* cmd) {
 	char* filename = cmd+strlen(cmd);
@@ -33,12 +27,14 @@ void usage(char* cmd) {
 		}
 		filename--;
 	}
-	printf("Usage: %s [-h] [-v] [-p] [-clk] [-r bitrate] [-bw bandwidth] [-t tone_count] -o output.wav [-i inpath | -m \"message\"]\n",filename);
+	printf("Usage: %s [-h] [-v] [-p] [-fsk | -fskclk | -ook] [-r bitrate] [-bw bandwidth] \n",filename);
+	printf("  [-t tone_count] [-f frequency] -o output.wav [-i inpath | -m \"message\"]\n");
 	printf("\n");
 	printf("Defaults:\n");
 	printf("  bitrate : %d\n",DEFAULT_BITRATE);
 	printf("  bandwidth: %d\n",DEFAULT_BANDWIDTH);
 	printf("  tone_count: %d\n",DEFAULT_TONE_COUNT);
+	printf("  frequency: %d\n",DEFAULT_FREQUENCY);
 	printf("\n");
 	exit(0);
 }
@@ -50,21 +46,19 @@ int main(int argc, char** argv) {
 	double *samples;
 	sf_count_t samples_len;
 	ssize_t readlen;
-	uint8_t *rawdata = 0;
-	size_t rawdata_len = 0;
 	uint8_t *data = 0;
 	size_t data_len = 0;
-	compatmodem_t *modem = 0;;
-	packetmodem_t *pkt = 0;
+	audiomodem_t *modem = 0;;
 	char *outpath = 0;
 	char *inpath = 0;
 	int fd;
 	int verbose = 0;
 	int use_pkt = 0;
-	int use_clk = 0;
+	audiomodem_type_t modem_type = COMPAT_NONE;
 	size_t bitrate = 0;
 	size_t bandwidth = 0;
 	size_t tone_count = 0;
+	size_t frequency = 0;
 	int i = 1;
 	
 	while( i < argc ) {
@@ -80,11 +74,23 @@ int main(int argc, char** argv) {
 			}
 			use_pkt = 1;
 		}
-		else if( !strcmp(argv[i],"-clk") ) {
-			if( use_clk ) {
+		else if( !strcmp(argv[i],"-fsk") ) {
+			if( modem_type != COMPAT_NONE ) {
 				usage(argv[0]);
 			}
-			use_clk = 1;
+			modem_type = COMPAT_FSK;
+		}
+		else if( !strcmp(argv[i],"-fskclk") ) {
+			if( modem_type != COMPAT_NONE ) {
+				usage(argv[0]);
+			}
+			modem_type = COMPAT_FSKCLK;
+		}
+		else if( !strcmp(argv[i],"-ook") ) {
+			if( modem_type != COMPAT_NONE ) {
+				usage(argv[0]);
+			}
+			modem_type = COMPAT_OOK;
 		}
 		else if( !strcmp(argv[i],"-r") ) {
 			++i;
@@ -116,6 +122,16 @@ int main(int argc, char** argv) {
 				usage(argv[0]);
 			}
 		}
+		else if( !strcmp(argv[i],"-f") ) {
+			++i;
+			if( i >= argc || frequency ) {
+				usage(argv[0]);
+			}
+			frequency = strtoul(argv[i],0,0);
+			if( !frequency ) {
+				usage(argv[0]);
+			}
+		}
 		else if( !strcmp(argv[i],"-o") ) {
 			++i;
 			if( i >= argc || outpath ) {
@@ -135,8 +151,8 @@ int main(int argc, char** argv) {
 			if( i >= argc || inpath || data ) {
 				usage(argv[0]);
 			}
-			rawdata = (uint8_t*)argv[i];
-			rawdata_len = strlen(argv[i]);
+			data = (uint8_t*)argv[i];
+			data_len = strlen(argv[i]);
 		}
 		else {
 			usage(argv[0]);
@@ -144,10 +160,13 @@ int main(int argc, char** argv) {
 		++i;
 	}
 
+	if( modem_type == COMPAT_NONE ) {
+		usage(argv[0]);
+	}
 	if( !outpath ) {
 		usage(argv[0]);
 	}
-	if( !inpath && !rawdata ) {
+	if( !inpath && !data ) {
 		usage(argv[0]);
 	}
 	if( !bitrate ) {
@@ -158,6 +177,9 @@ int main(int argc, char** argv) {
 	}
 	if( !tone_count ) {
 		tone_count = DEFAULT_TONE_COUNT;
+	}
+	if( !frequency ) {
+		frequency = DEFAULT_FREQUENCY;
 	}
 	
 	if( bandwidth <= 4000 ) {
@@ -183,27 +205,28 @@ int main(int argc, char** argv) {
 		exit(0);
 	}
 	
-	if( use_clk ) {
-		modem = compatmodem_fskclk_init(sfinfo.samplerate, bitrate, bandwidth, tone_count);
+	if( modem_type == COMPAT_FSKCLK ) {
+		modem = audiomodem_fskclk_init(sfinfo.samplerate, bitrate, bandwidth, tone_count);
 	}
-	else {
-		modem = compatmodem_fsk_init(sfinfo.samplerate, bitrate, bandwidth, tone_count);
+	else if( modem_type == COMPAT_FSK ) {
+		modem = audiomodem_fsk_init(sfinfo.samplerate, bitrate, bandwidth, tone_count);
+	}
+	else if( modem_type == COMPAT_OOK ) {
+		modem = audiomodem_ook_init(sfinfo.samplerate,bitrate,frequency);
 	}
 	if( !modem ) {
 		printf("Failed to create modem\n");
 		exit(0);
 	}
-	if( verbose ) {
-		compatmodem_printinfo(modem);
-		compatmodem_set_verbose(modem,verbose);
-	}
-	
 	if( use_pkt ) {
-		pkt = packetmodem_init(3);
-		if( !pkt ) {
-			printf("Failed to create packet modem\n");
+		if( audiomodem_pkt_init(modem) ) {
+			printf("Failed to create packet framer\n");
 			exit(0);
 		}
+	}
+	if( verbose ) {
+		audiomodem_printinfo(modem);
+		audiomodem_set_verbose(modem,verbose);
 	}
 	
 	if( inpath ) {
@@ -212,26 +235,16 @@ int main(int argc, char** argv) {
 			printf("Failed to open %s\n",inpath);
 			exit(0);
 		}
-		rawdata = (uint8_t*)malloc(sizeof(uint8_t)*1024);
-		if( !rawdata ) {
+		data = (uint8_t*)malloc(sizeof(uint8_t)*1024);
+		if( !data ) {
 			printf("Memory allocation failed\n");
 			exit(0);
 		}
 		for(;;) {
-			readlen = read(fd,rawdata,1024);
+			readlen = read(fd,data,1024);
 			if( readlen <= 0 ) { break; }
-			rawdata_len = (size_t)readlen;
-			if( use_pkt ) {
-				if( packetmodem_tx(pkt,&data,&data_len,rawdata,rawdata_len) ) {
-					printf("Failed to generate packet\n");
-					exit(0);
-				}
-			}
-			else {
-				data = rawdata;
-				data_len = rawdata_len;
-			}
-			if( compatmodem_modulate(modem, &samples, &samples_len, data, data_len) ) {
+			data_len = (size_t)readlen;
+			if( audiomodem_modulate(modem, &samples, &samples_len, data, data_len) ) {
 				printf("Failed to generate audio\n");
 				exit(0);
 			}
@@ -240,17 +253,7 @@ int main(int argc, char** argv) {
 		free(data);
 	}
 	else {
-		if( use_pkt ) {
-			if( packetmodem_tx(pkt,&data,&data_len,rawdata,rawdata_len) ) {
-				printf("Failed to generate packet\n");
-				exit(0);
-			}
-		}
-		else {
-			data = rawdata;
-			data_len = rawdata_len;
-		}
-		if( compatmodem_modulate(modem, &samples, &samples_len, data, data_len) ) {
+		if( audiomodem_modulate(modem, &samples, &samples_len, data, data_len) ) {
 			printf("Failed to generate audio\n");
 			exit(0);
 		}
@@ -258,10 +261,7 @@ int main(int argc, char** argv) {
 	}
 	
 	if( modem ) {
-		compatmodem_destroy(modem);
-	}
-	if( pkt ) {
-		packetmodem_destroy(pkt);
+		audiomodem_destroy(modem);
 	}
 	sf_close(sndfile);
 	return 0;
