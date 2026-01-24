@@ -7,7 +7,11 @@
 #include <unistd.h>
 #include <time.h>
 
+//#define FSKCALIBRATE_VERBOSE 1
+
 #define BITOPS_IMPLEMENTATION
+#define FSKCALIBRATE_IMPLEMENTATION
+#define SRCFFT_IMPLEMENTATION
 #define FSKCLK_IMPLEMENTATION
 #define FSK_IMPLEMENTATION
 #define OOK_IMPLEMENTATION
@@ -30,15 +34,16 @@ void usage(char* cmd) {
 		}
 		filename--;
 	}
-	printf("Usage: %s [-h] [-v] [-p] [-fsk | -fskclk | -ook] [-r start_bitrate] [-bw bandwidth] \n",filename);
-	printf("  [-t tone_count] [-f frequency] [-s test_size] [-n noise_amplitude]\n");
+	printf("Usage: %s [-h] [-v] [-p] [-fsk | -fskclk | -ook] [-s samplerate] [-r bitrate]\n",filename);
+	printf("  [-bw bandwidth] [-t tone_count] [-f frequency] [-z test_size] [-n noise_amplitude]\n");
 	printf("\n");
 	printf("Defaults:\n");
-	printf("  start_bitrate: %d\n",DEFAULT_BITRATE);
-	printf("  bandwidth: %d\n",DEFAULT_BANDWIDTH);
-	printf("  tone_count: %d\n",DEFAULT_TONE_COUNT);
-	printf("  frequency: %d\n",DEFAULT_FREQUENCY);
-	printf("  test_size: %d\n",DEFAULT_TEST_SIZE);
+	printf("  samplerate     : based on bandwidth\n");
+	printf("  start_bitrate  : %d\n",DEFAULT_BITRATE);
+	printf("  bandwidth      : %d\n",DEFAULT_BANDWIDTH);
+	printf("  tone_count     : %d\n",DEFAULT_TONE_COUNT);
+	printf("  frequency      : %d\n",DEFAULT_FREQUENCY);
+	printf("  test_size      : %d\n",DEFAULT_TEST_SIZE);
 	printf("  noise_amplitude: %0.1lf\n",(double)DEFAULT_NOISE_AMPLITUDE);
 	printf("\n");
 	exit(0);
@@ -53,13 +58,13 @@ int main(int argc, char** argv) {
 	uint8_t *comp_data;
 	size_t   comp_size;
 	audiomodem_t *modem = 0;
-	size_t samplerate;
 	size_t max_bitrate = 0;
 	size_t best_bitrate = 0;
 	size_t next_bitrate;
 	int verbose = 0;
 	int use_pkt = 0;
 	audiomodem_type_t modem_type = COMPAT_NONE;
+	size_t samplerate = 0;
 	size_t bitrate = 0;
 	size_t bandwidth = 0;
 	size_t tone_count = 0;
@@ -101,6 +106,16 @@ int main(int argc, char** argv) {
 			}
 			modem_type = COMPAT_OOK;
 		}
+		else if( !strcmp(argv[i],"-s") ) {
+			++i;
+			if( i >=argc || samplerate ) {
+				usage(argv[0]);
+			}
+			samplerate = strtoul(argv[i],0,0);
+			if( !samplerate ) {
+				usage(argv[0]);
+			}
+		}
 		else if( !strcmp(argv[i],"-r") ) {
 			++i;
 			if( i >= argc || bitrate ) {
@@ -141,7 +156,7 @@ int main(int argc, char** argv) {
 				usage(argv[0]);
 			}
 		}
-		else if( !strcmp(argv[i],"-s") ) {
+		else if( !strcmp(argv[i],"-z") ) {
 			++i;
 			if( i >= argc || test_size ) {
 				usage(argv[0]);
@@ -189,18 +204,23 @@ int main(int argc, char** argv) {
 		noise_amp = DEFAULT_NOISE_AMPLITUDE;
 	}
 	
-	if( bandwidth <= 4000 ) {
-		samplerate=8000;
+	if( !samplerate ) {
+		if( bandwidth <= 4000 ) {
+			samplerate=8000;
+		}
+		else if( bandwidth <= 8000 ) {
+			samplerate=16000;
+		}
+		else if( bandwidth <= 22050 ) {
+			samplerate=44100;
+		}
+		else {
+			printf("Bandwidth is too large\n");
+			exit(0);
+		}
 	}
-	else if( bandwidth <= 8000 ) {
-		samplerate=16000;
-	}
-	else if( bandwidth <= 22050 ) {
-		samplerate=44100;
-	}
-	else {
-		printf("Bandwidth is too large\n");
-		exit(0);
+	else if( samplerate < bandwidth *2 ) {
+		printf("Samplerate is too small for bandwidth\n");
 	}
 	
 	//Generate random data
@@ -267,13 +287,15 @@ int main(int argc, char** argv) {
 			exit(0);
 		}
 		
+		/*
 		for( ii=0; ii<samples_len; ii++ ) {
 			ota_samples[ii] = samples[ii];
 		}
 		for( ; ii < ota_samples_len; ii++ ) {
 			ota_samples[ii] = 0.0;
 		}
-		/*
+		*/
+		
 		for( ii=0; ii<samplerate; ii++ ) {
 			ota_samples[ii] = 0.0;
 		}
@@ -283,7 +305,7 @@ int main(int argc, char** argv) {
 		for( ; ii<ota_samples_len; ii++ ) {
 			ota_samples[ii] = 0.0;
 		}
-		*/
+		
 		
 		//Introduce noise
 		if( noise_amp ) {

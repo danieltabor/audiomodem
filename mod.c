@@ -7,6 +7,8 @@
 #include <unistd.h>
 
 #define BITOPS_IMPLEMENTATION
+#define FSKCALIBRATE_IMPLEMENTATION
+#define SRCFFT_IMPLEMENTATION
 #define FSKCLK_IMPLEMENTATION
 #define FSK_IMPLEMENTATION
 #define OOK_IMPLEMENTATION
@@ -27,14 +29,16 @@ void usage(char* cmd) {
 		}
 		filename--;
 	}
-	printf("Usage: %s [-h] [-v] [-p] [-fsk | -fskclk | -ook] [-r bitrate] [-bw bandwidth] \n",filename);
-	printf("  [-t tone_count] [-f frequency] -o output.wav [-i inpath | -m \"message\"]\n");
+	printf("Usage: %s [-h] [-v] [-p] [-fsk | -fskclk | -ook] [-s samplerate] [-r bitrate]\n",filename);
+	printf("  [-bw bandwidth] [-t tone_count] [-f frequency] -o output.wav\n");
+	printf("  [-i inpath | -m \"message\"]\n");
 	printf("\n");
 	printf("Defaults:\n");
-	printf("  bitrate : %d\n",DEFAULT_BITRATE);
-	printf("  bandwidth: %d\n",DEFAULT_BANDWIDTH);
+	printf("  samplerate: based on bandwidth\n");
+	printf("  bitrate   : %d\n",DEFAULT_BITRATE);
+	printf("  bandwidth : %d\n",DEFAULT_BANDWIDTH);
 	printf("  tone_count: %d\n",DEFAULT_TONE_COUNT);
-	printf("  frequency: %d\n",DEFAULT_FREQUENCY);
+	printf("  frequency : %d\n",DEFAULT_FREQUENCY);
 	printf("\n");
 	exit(0);
 }
@@ -55,6 +59,7 @@ int main(int argc, char** argv) {
 	int verbose = 0;
 	int use_pkt = 0;
 	audiomodem_type_t modem_type = COMPAT_NONE;
+	size_t samplerate = 0;
 	size_t bitrate = 0;
 	size_t bandwidth = 0;
 	size_t tone_count = 0;
@@ -91,6 +96,16 @@ int main(int argc, char** argv) {
 				usage(argv[0]);
 			}
 			modem_type = COMPAT_OOK;
+		}
+		else if( !strcmp(argv[i],"-s") ) {
+			++i;
+			if( i >=argc || samplerate ) {
+				usage(argv[0]);
+			}
+			samplerate = strtoul(argv[i],0,0);
+			if( !samplerate ) {
+				usage(argv[0]);
+			}
 		}
 		else if( !strcmp(argv[i],"-r") ) {
 			++i;
@@ -181,20 +196,26 @@ int main(int argc, char** argv) {
 	if( !frequency ) {
 		frequency = DEFAULT_FREQUENCY;
 	}
+	if( !samplerate ) {
+		if( bandwidth <= 4000 ) {
+			samplerate=8000;
+		}
+		else if( bandwidth <= 8000 ) {
+			samplerate=16000;
+		}
+		else if( bandwidth <= 22050 ) {
+			samplerate=44100;
+		}
+		else {
+			printf("Bandwidth is too large\n");
+			exit(0);
+		}
+	}
+	else if( samplerate < bandwidth *2 ) {
+		printf("Samplerate is too small for bandwidth\n");
+	}
 	
-	if( bandwidth <= 4000 ) {
-		sfinfo.samplerate=8000;
-	}
-	else if( bandwidth <= 8000 ) {
-		sfinfo.samplerate=16000;
-	}
-	else if( bandwidth <= 22050 ) {
-		sfinfo.samplerate=44100;
-	}
-	else {
-		printf("Bandwidth is too large\n");
-		exit(0);
-	}
+	sfinfo.samplerate = samplerate;
 	sfinfo.channels=1;
 	sfinfo.format=SF_FORMAT_WAV|SF_FORMAT_PCM_16;
 	sfinfo.sections=1;
@@ -224,9 +245,9 @@ int main(int argc, char** argv) {
 			exit(0);
 		}
 	}
+	audiomodem_set_verbose(modem,verbose);
 	if( verbose ) {
 		audiomodem_printinfo(modem);
-		audiomodem_set_verbose(modem,verbose);
 	}
 	
 	if( inpath ) {
