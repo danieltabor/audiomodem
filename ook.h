@@ -6,23 +6,20 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#include <samplerate.h>
-#include <fftw3.h>
-
 #include "bitops.h"
+#include "srcfft.h"
 
 #define OOK_DEFAULT_VERBOSE      0
-#define OOK_DEFAULT_THRESH       0.90
-#define OOK_FFT_BINS             10
-#define OOK_REDUNDANCY            3
-
+#define OOK_DEFAULT_THRESH       0.50
 
 typedef enum{
 	OOK_DEMOD_SEARCH,
 	OOK_DEMOD_IDLE_ACQUIRE,
 	OOK_DEMOD_IDLE_DETECTED,
 	OOK_DEMOD_START_ACQUIRE,
-	OOK_DEMOD_DATA
+	OOK_DEMOD_SKIP,
+	OOK_DEMOD_DATA,
+	OOK_DEMOD_BIT_READY,
 } ook_demod_state_t;
 
 typedef struct {
@@ -32,28 +29,17 @@ typedef struct {
 	double   frequency;
 	
 	size_t   mod_samp_per_sym;
+	size_t   demod_samp_per_fft;
 	double  *mod_samples;
 	size_t   mod_sampleslen;
 	
+	srcfft_t *srcfft;
 	ook_demod_state_t demod_state;
 	
-	size_t     demod_sync_skip;
-	
-	size_t     demod_bins;
-	size_t     demod_freq_bin;
-	fftw_plan  demod_plan;
-	double    *demod_fftin;
-	size_t     demod_fftinlen;
-	size_t     demod_fftin_alloc;
-	
-	fftw_complex *demod_fftout;
-	double    *demod_fftmag;
 	size_t     demod_sync_loss;
-	double     demod_norm_thresh;
-	double     demod_thresh;
+	size_t     demod_fft_skip;
 	
-	uint8_t    demod_sym_vote;
-	uint8_t    demod_sym_vote_count;
+	int        demod_sym;
 	uint8_t    demod_byte;
 	uint8_t    demod_bit_count;
 	uint8_t   *demod_data;
@@ -75,6 +61,8 @@ int    ook_demodulate(ook_t *modem, uint8_t **data, size_t *datalen, double *sam
 #ifdef OOK_IMPLEMENTATION
 #undef OOK_IMPLEMENTATION
 
+#define OOK_OVERSAMPLE 4
+
 ook_t *ook_init(size_t samplerate, size_t bitrate, double frequency) {
 	ook_t *modem;
 	
@@ -90,47 +78,20 @@ ook_t *ook_init(size_t samplerate, size_t bitrate, double frequency) {
 	modem->bitrate = bitrate;
 	modem->frequency = frequency;
 	
-	/*
-	//Samplerate conveter
-	modem->demod_src = src_new(SRC_SINC_MEDIUM_QUALITY,1,0);
-	if( !modem->demod_src ) { goto fskclk_init_error; }
-	//Make sure we are analyzing chunks small enough to guarantee that we
-	//will see a clock for at least 2 clean ffts and dat for at least 2 clean ffts
-	modem->demod_srcin_alloc = modem->mod_mod_samp_per_sym / 8;
-	modem->demod_srcin  = (float*)malloc(sizeof(float) * modem->demod_srcin_alloc);
-	if( !modem->demod_srcin ) { goto ook_init_error; }
-	modem->demod_srcout_alloc = modem->demod_mod_samp_per_sym / 8;
-	modem->demod_srcout = (float*)malloc(sizeof(float) * modem->demod_srcout_alloc);
-	if( !modem->demod_srcout ) { goto ook_init_error; }
-	*/
+	modem->mod_samp_per_sym = (double)samplerate / (double)bitrate;
+	//Make sure that we are measureing the signal fast enough to 
+	//catch as least FSK_OVERSAMPLE measurements of both the 
+	//clk and the data
+	modem->demod_samp_per_fft = ((double)samplerate / (double)bitrate )/ (double)OOK_OVERSAMPLE;
 	
-	//Make sure we look at enough samples to get at least 
-	//OOK_REDUNDANCY measurements for each symbol
-	modem->demod_fftin_alloc = modem->mod_samp_per_sym / (OOK_REDUNDANCY+2);
-	
-	//FFT
-	//Because these are real samples, only the first half of the fft results (DC->nyquist) will be valid
-	//The second half (-nyquist->DC) will all be zero
-	modem->demod_bins = modem->demod_fftin_alloc / 2;
-	if( modem->demod_bins < 1 ) {
-		//Too small run any meaningful FFT
-		goto ook_init_error;
-	}
-	
-	modem->demod_freq_bin = (size_t)(modem->frequency * (double)modem->demod_bins / ((double)modem->samplerate / 2.0));
-	modem->demod_fftin  = (double*)fftw_malloc(sizeof(double) * modem->demod_fftin_alloc);
-	if( !modem->demod_fftin ) { goto ook_init_error; }
-	modem->demod_fftout = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * modem->demod_fftin_alloc);
-	if( !modem->demod_fftout ) { goto ook_init_error; }
-	modem->demod_plan   = fftw_plan_dft_r2c_1d(modem->demod_fftin_alloc, modem->demod_fftin, modem->demod_fftout,  FFTW_MEASURE);
-	modem->demod_fftmag = (double*)malloc(sizeof(double)* modem->demod_bins);
-	if( !modem->demod_fftmag ) { goto ook_init_error; }
-	
-	modem->demod_state = OOK_DEMOD_SEARCH;
-	
+	//Create the Samplerate converting FFT object
+	modem->srcfft = srcfft_init(samplerate,modem->demod_samp_per_fft,samplerate/2,1);
+	if( !modem->srcfft ) { goto ook_init_error; }
 	if( ook_set_thresh(modem,OOK_DEFAULT_THRESH) ) {
 		goto ook_init_error;
 	}
+	
+	modem->demod_state = OOK_DEMOD_SEARCH;
 	
 	return modem;
 	
@@ -141,10 +102,8 @@ ook_t *ook_init(size_t samplerate, size_t bitrate, double frequency) {
 
 void ook_destroy(ook_t *modem) {
 	if( modem ) {
+		if( modem->srcfft) { srcfft_destroy(modem->srcfft); }
 		if( modem->mod_samples ) { free(modem->mod_samples); }
-		if( modem->demod_fftin ) { fftw_free(modem->demod_fftin); }
-		if( modem->demod_fftout ) { fftw_free(modem->demod_fftout); }
-		if( modem->demod_fftmag ) { free(modem->demod_fftmag); }
 		if( modem->demod_data ) { free(modem->demod_data); }
 		memset(modem,0,sizeof(ook_t));
 		free(modem);
@@ -153,42 +112,67 @@ void ook_destroy(ook_t *modem) {
 
 
 int ook_set_thresh(ook_t *modem, double thresh) {
-	size_t i;
-	double mag;
-	double maxmag;
-	size_t maxbin;
+	size_t ii;
+	size_t k;
+	size_t sampleslen = 0;
+	double *samples = 0;
+	srcfft_status_t result;
 	
-	if( !modem ) { return -1; }
-	if( thresh == modem->demod_norm_thresh ) { return 0; }
-	
-	//Execute an FFT on a pure tone to set non-normalized threshold
-	for( i=0; i<modem->demod_fftin_alloc; i++ ) {
-		modem->demod_fftin[i] = sin(2.0*M_PI*modem->frequency*i/modem->samplerate);
+	if( modem->verbose ) {
+		printf("ook_set_thresh(...)\n");
 	}
-	modem->demod_fftinlen = 0;
-	fftw_execute(modem->demod_plan);
 	
-	maxmag = -1;
-	for( i=0; i<modem->demod_bins; i++ ) {
-		mag = sqrt(modem->demod_fftout[i][0] * modem->demod_fftout[i][0] + modem->demod_fftout[i][1] * modem->demod_fftout[i][1]);
-		if( isnan(mag) || isinf(mag) ) {
-			continue;
+	sampleslen = modem->srcfft->srcinalloc;
+	samples = (double*)malloc(sizeof(double)*sampleslen);
+	if( !samples ) {
+		if( modem->verbose ) {
+			printf("  malloc failed");
 		}
-		if( mag > maxmag ) {
-			maxmag = mag;
-			maxbin = i;
+		goto ook_set_thresh_error;
+	}
+	
+	if( srcfft_reset(modem->srcfft) ) {
+		if( modem->verbose ) {
+			printf("    Failed to reset srcfft\n");
 		}
+		goto ook_set_thresh_error;
 	}
 	
-	if( maxmag <= 0 ) {
-		return -1;
+	ii = 0;
+	do {
+		//Generate Tone
+		for( k=0; k<sampleslen; k++ ) {
+			samples[k] = thresh*sin(2*M_PI*modem->frequency*ii/modem->samplerate);
+			ii++;
+		}
+		//Execute FFT
+		result = srcfft_process(modem->srcfft,samples,sampleslen);
+		if( result == SRCFFT_ERROR || 
+			result == SRCFFT_NEED_MORE && modem->srcfft->used_samples != sampleslen ) {
+			if( modem->verbose ) {
+				printf("  Failed to process samples\n");
+			}
+			goto ook_set_thresh_error;
+		}
+	} while( result == SRCFFT_NEED_MORE );
+	
+	if( srcfft_set_thresh(modem->srcfft,thresh*modem->srcfft->maxmag) ) {
+		goto ook_set_thresh_error;
 	}
 	
-	modem->demod_norm_thresh = thresh;
-	modem->demod_thresh = maxmag * thresh;
-	modem->demod_freq_bin = maxbin;
-	
+	if( samples ) { free(samples); }
+	if( srcfft_reset(modem->srcfft) ) {
+		if( modem->verbose ) {
+			printf("  Failed to reset srcfft\n");
+		}
+		goto ook_set_thresh_error;
+	}
 	return 0;
+	
+	ook_set_thresh_error:
+	if( samples ) { free(samples); }
+	(void)srcfft_reset(modem->srcfft);
+	return -1;
 }
 
 int ook_set_verbose(ook_t *modem, int verbose) {
@@ -205,6 +189,7 @@ void ook_printinfo(ook_t *modem) {
 	printf("  Samplerate         : %zu\n",modem->samplerate);
 	printf("  Bitrate            : %zu bps\n",modem->bitrate);
 	printf("  Samples per Symbol : %zu\n",modem->mod_samp_per_sym);
+	printf("  Samples per FFT    : %zu\n",modem->demod_samp_per_fft);
 	printf("  Frequency          : %0.1lf Hz\n",modem->frequency);
 }
 
@@ -314,11 +299,9 @@ int ook_modulate(ook_t *modem, double **samples, size_t *sampleslen, uint8_t *da
 
 int ook_demodulate(ook_t *modem, uint8_t **data, size_t *datalen, double *samples, size_t sampleslen) {
 	size_t   ii;
-	size_t   i;
-	double   mag;
-	int      tone_detected;
+	int tone_detected;
 	uint8_t *tmpdata;
-	int      bit;
+	srcfft_status_t result;
 	
 	
 	if( !modem ) { return -1; }
@@ -334,191 +317,136 @@ int ook_demodulate(ook_t *modem, uint8_t **data, size_t *datalen, double *sample
 	*data = modem->demod_data;
 	*datalen = modem->demod_datalen;
 	
+	
 	ii = 0;
 	while( ii < sampleslen ) {
-		//Skip samples to synchonize to a symbol
-		//if( modem->demod_sync_skip && modem->verbose ) {
-		//	printf("  Skip %zu of %zu samples\n",modem->demod_sync_skip,sampleslen-ii);
-		//}
-		//while( modem->demod_sync_skip && ii < sampleslen ) {
-		//	ii++;
-		//	modem->demod_sync_skip--;
-		//}
-		
-		//Move samples into fft input
-		while( modem->demod_fftinlen < modem->demod_fftin_alloc && ii < sampleslen ) {
-			modem->demod_fftin[modem->demod_fftinlen] = samples[ii];
-			modem->demod_fftinlen++;
-			ii++;
-		}
-		
-		if( modem->demod_fftinlen < modem->demod_fftin_alloc ) {
-			//Unable to perform one last FFT
+		result = srcfft_process(modem->srcfft,samples+ii,sampleslen-ii);
+		ii = ii + modem->srcfft->used_samples;
+		if( result == SRCFFT_ERROR ) { 
 			if( modem->verbose ) {
-				printf("  Need more samples: %zu / %zu\n",modem->demod_fftinlen,modem->demod_fftin_alloc);
-			}
-			break;
-		}
-		//modem->demod_fftinlen = 0;
-		
-		fftw_execute(modem->demod_plan);
-		
-		//Produce FFT magnitudes
-		if( modem->verbose ) {
-			printf("  fft : ");
-		}
-		for( i=0; i<modem->demod_bins; i++ ) {
-			mag = sqrt(modem->demod_fftout[i][0] * modem->demod_fftout[i][0] + modem->demod_fftout[i][1] * modem->demod_fftout[i][1]);
-			modem->demod_fftmag[i] = mag;
-			if( modem->verbose ) {
-				printf("%1.2lf ",modem->demod_fftmag[i]);
+				printf("  FFT failed\n");
+				return -1; 
 			}
 		}
-		if( modem->verbose ) {
-			printf("\n");
-		}
-		
-		if(  modem->demod_fftmag[modem->demod_freq_bin] >= modem->demod_thresh ||
-		    (modem->demod_freq_bin < modem->demod_bins-1 &&
-			 modem->demod_fftmag[modem->demod_freq_bin+1] >= modem->demod_thresh) ) {
-			tone_detected = 1;
-		}
-		else {
-			tone_detected = 0;
-		}
-		if( modem->verbose ) {
-			printf("    Mag: %1.2lf Thresh: %1.2lf Detected: %d\n",modem->demod_fftmag[modem->demod_freq_bin],modem->demod_thresh,tone_detected);
-		}
-		
-		if( modem->demod_sync_skip ) {
-			if( modem->verbose ) {
-				printf("  Skip %zu of %zu samples\n",modem->demod_sync_skip,modem->demod_fftin_alloc);
-			}
-			while( modem->demod_sync_skip && modem->demod_fftinlen ) {
-				for( i=0; i<modem->demod_fftinlen-1; i++ ) {
-					modem->demod_fftin[i] = modem->demod_fftin[i+1];
-				}
-				modem->demod_fftinlen--;
-				modem->demod_sync_skip--;
-			}
+		else if( result == SRCFFT_NEED_MORE ) {
 			continue;
 		}
-		modem->demod_fftinlen = 0;
+		if( modem->verbose ) {
+			srcfft_printresult(modem->srcfft);
+		}
 		
-		//Check for a single peak
-		if( !tone_detected && modem->demod_state != OOK_DEMOD_SEARCH ) {
-			modem->demod_sync_loss = modem->demod_sync_loss + modem->demod_fftin_alloc;
-			if( modem->demod_sync_loss >= modem->mod_samp_per_sym ) {
-				if( modem->verbose ) {
-					printf("      Sync lost\n");
-				}
-				modem->demod_state = OOK_DEMOD_SEARCH;
-			}
-		}
-		if( tone_detected ) {
-			modem->demod_sync_loss = 0;
-		}
+		//Check for signal
+		tone_detected = modem->srcfft->detectlen;
 		
 		if( modem->demod_state == OOK_DEMOD_SEARCH ) {
 			if( tone_detected ) {
 				//First sample (idle)
 				modem->demod_state = OOK_DEMOD_IDLE_ACQUIRE;
-				modem->demod_sym_vote = tone_detected;
-				modem->demod_sym_vote_count = 1;
 			}
 		}
 		else if( modem->demod_state == OOK_DEMOD_IDLE_ACQUIRE ) {
-			modem->demod_sym_vote = modem->demod_sym_vote + tone_detected;
-			modem->demod_sym_vote_count++;
-			if( modem->demod_sym_vote_count == OOK_REDUNDANCY ) {
-				if( modem->demod_sym_vote == OOK_REDUNDANCY ) {
-					//Solid tone detected
-					if( modem->verbose ) {
-						printf("      Sync detected\n");
-					}
-					modem->demod_state = OOK_DEMOD_IDLE_DETECTED;
-				} 
-				else {
-					modem->demod_state = OOK_DEMOD_SEARCH;
+			if( tone_detected ) {
+				modem->demod_state = OOK_DEMOD_IDLE_DETECTED;
+				if( modem->verbose ) {
+					printf("      Sync detected\n");
 				}
-				modem->demod_sym_vote = 0;
-				modem->demod_sym_vote_count = 0;
+			}
+			else {
+				//False Sync
+				modem->demod_state = OOK_DEMOD_SEARCH;
 			}
 		}
 		else if( modem->demod_state == OOK_DEMOD_IDLE_DETECTED ) {
 			if( !tone_detected ) {
 				//First sample (start)
 				modem->demod_state = OOK_DEMOD_START_ACQUIRE;
-				modem->demod_sym_vote = tone_detected;
-				modem->demod_sym_vote_count = 1;
 			}
 		}
 		else if( modem->demod_state == OOK_DEMOD_START_ACQUIRE ) {
-			modem->demod_sym_vote = modem->demod_sym_vote + tone_detected;
-			modem->demod_sym_vote_count++;
-			if( modem->demod_sym_vote_count == OOK_REDUNDANCY ) {
-				if( modem->demod_sym_vote > 0 ) {
-					//False Start
-					modem->demod_state = OOK_DEMOD_IDLE_DETECTED;
+			if( tone_detected ) {
+				//False Start
+				modem->demod_state = OOK_DEMOD_SEARCH;
+				if( modem->verbose ) {
+					printf("      False Sync\n");
+				}
+			}
+			else {
+				if( modem->verbose ) {
+					printf("      Start Byte detected\n");
+				}
+				modem->demod_state = OOK_DEMOD_SKIP;
+				modem->demod_fft_skip = OOK_OVERSAMPLE - 2;
+				modem->demod_sym = 1;
+			}
+		}
+		else if( modem->demod_state == OOK_DEMOD_SKIP ) {
+			if( ( tone_detected &&  modem->demod_sym) ||
+			    (!tone_detected && !modem->demod_sym) ) {
+				//Change sooner than expected
+				if( tone_detected ) {
+					modem->demod_sym = 0;
 				}
 				else {
-					//Solid non-tone detect
-					if( modem->verbose ) {
-						printf("      Start Byte detected\n");
-					}
-					modem->demod_state = OOK_DEMOD_DATA;
-					modem->demod_sync_loss = 0;
-					modem->demod_sync_skip  = round(modem->mod_samp_per_sym * 2 / (OOK_REDUNDANCY+2));
-					modem->demod_byte = 0;
+					modem->demod_sym = 1;
 				}
-				modem->demod_sym_vote = 0;
-				modem->demod_sym_vote_count = 0;
+				modem->demod_state = OOK_DEMOD_BIT_READY;
+				if( modem->verbose ) {
+					printf("    Early Change\n");
+				}
+			}
+			else {
+				modem->demod_fft_skip--;
+				if( !modem->demod_fft_skip ) {
+					modem->demod_state = OOK_DEMOD_DATA;
+				}
+				if( modem->verbose ) {
+					printf("    Ignored (%zu left)\n",modem->demod_fft_skip);
+				}
 			}
 		}
 		else if( modem->demod_state == OOK_DEMOD_DATA ) {
-			modem->demod_sym_vote = modem->demod_sym_vote + tone_detected;
-			modem->demod_sym_vote_count++;
-			if( modem->verbose ) { printf("Bit: %d %d\n",modem->demod_sym_vote,modem->demod_sym_vote_count); }
-			if( modem->demod_sym_vote_count == OOK_REDUNDANCY ) {
-				if( modem->demod_sym_vote > (OOK_REDUNDANCY/2) ) {
-					bit = 0;
-				}
-				else {
-					bit = 1;
-				}
-				modem->demod_sym_vote = 0;
-				modem->demod_sym_vote_count = 0;
+			if( tone_detected ) {
+				modem->demod_sym = 0;
+			}
+			else {
+				modem->demod_sym = 1;
+			}
+			modem->demod_state = OOK_DEMOD_BIT_READY;
+		}
+		
+		
+		if( modem->demod_state == OOK_DEMOD_BIT_READY ) {
+			if( modem->verbose ) {
+				printf("    Bit: %d\n",modem->demod_sym);
+			}
+			modem->demod_byte = (modem->demod_byte >> 1) | (modem->demod_sym<<7);
+			modem->demod_bit_count++;
+			if( modem->demod_bit_count >= 8 ) {
+				//Push a demodulated byte
 				if( modem->verbose ) {
-					printf("    Bit: %d\n",bit);
+					printf("    Data Byte: %02x\n",modem->demod_byte);
 				}
-				modem->demod_byte = (modem->demod_byte >> 1) | (bit<<7);
-				modem->demod_bit_count++;
-				if( modem->demod_bit_count >= 8 ) {
-					//Push a demodulated byte
+				tmpdata = (uint8_t*)realloc(modem->demod_data,sizeof(uint8_t)*(modem->demod_datalen+1));
+				if( !tmpdata ) {
 					if( modem->verbose ) {
-						printf("    Data Byte: %02x\n",modem->demod_byte);
+						printf("      Failed to reallocate data buffer\n");
 					}
-					tmpdata = (uint8_t*)realloc(modem->demod_data,sizeof(uint8_t)*(modem->demod_datalen+1));
-					if( !tmpdata ) {
-						if( modem->verbose ) {
-							printf("      Failed to reallocate data buffer\n");
-						}
-						return -1;
-					}
-					modem->demod_data = tmpdata;
-					modem->demod_data[modem->demod_datalen] = modem->demod_byte;
-					modem->demod_datalen++;
-					modem->demod_byte = 0;
-					modem->demod_bit_count = 0;
+					return -1;
+				}
+				modem->demod_data = tmpdata;
+				modem->demod_data[modem->demod_datalen] = modem->demod_byte;
+				modem->demod_datalen++;
+				modem->demod_byte = 0;
+				modem->demod_bit_count = 0;
 
-					modem->demod_state = OOK_DEMOD_SEARCH;
-					modem->demod_sync_loss = 0;
-				}
-				else {
-					modem->demod_state = OOK_DEMOD_DATA;
-					modem->demod_sync_loss = 0;
-					modem->demod_sync_skip  = round(modem->mod_samp_per_sym * 2 / (OOK_REDUNDANCY+2));
-				}
+				modem->demod_state = OOK_DEMOD_SEARCH;
+				modem->demod_sync_loss = 0;
+				modem->demod_fft_skip = 0;
+			}
+			else {
+				modem->demod_state = OOK_DEMOD_SKIP;
+				modem->demod_sync_loss = 0;
+				modem->demod_fft_skip = OOK_OVERSAMPLE - 1;
 			}
 		}
 	}

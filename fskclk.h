@@ -109,7 +109,7 @@ fskclk_t *fskclk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_
 	if( !modem->srcfft ) { goto fskclk_init_error; }
 	modem->demod_thresh = FSKCLK_DEFAULT_THRESH;
 	
-	//Create optimal frequencies to use
+	//Calculate optimal frequencies to use
 	if( fskcalibrate(modem->tones, modem->tone_count, modem->srcfft, 
 	                 modem->samplerate, modem->bandwidth, modem->demod_thresh) ) {
 		goto fskclk_init_error;
@@ -164,154 +164,6 @@ int fskclk_set_thresh(fskclk_t *modem, double thresh) {
 int fskclk_set_verbose(fskclk_t *modem, int verbose) {
 	if( !modem ) { return -1; }
 	modem->verbose = verbose;
-	return 0;
-}
-
-int fskclk_calibrate(fskclk_t *modem) {
-	//Adjust the tone frequencies for this samplerate, bitrate, and tone_count
-	//to ensure that the pure symbol tones will be received in the correct
-	//FFT bins
-	size_t ii;
-	size_t j,k;
-	size_t expected_bin;
-	size_t received_bin;
-	size_t mod_sampleslen;
-	double *mod_samples;
-	double symmag;
-	double threshmag = -1;
-	
-	double freq_step;
-	double min_freq;
-	double     freq;
-	double max_freq;
-	
-	double maxmag;
-	double maxmagfreq;
-	
-	
-	ssize_t idx;
-	srcfft_status_t result;
-	
-	if( !modem ) { return -1; }
-	
-	if( modem->verbose ) {
-		printf("fskclk_calibrate(...)\n");
-	}
-	
-	mod_sampleslen = modem->demod_samp_per_fft;
-	mod_samples = (double*)realloc(modem->mod_samples,sizeof(double)*mod_sampleslen);
-	if( !mod_samples ) {
-		if( modem->verbose ) {
-			printf("  realloc failed");
-		}
-		return -1;
-	}
-	modem->mod_samples = mod_samples;
-	modem->mod_sampleslen = mod_sampleslen;
-	
-	freq_step = modem->bandwidth / (double)modem->tone_count;
-	for( expected_bin=0; expected_bin<modem->tone_count; expected_bin++ ) {
-		if( expected_bin < modem->tone_count/2 ) {
-			idx = expected_bin;
-		}
-		else if( expected_bin > modem->tone_count/2 ) {
-			idx = expected_bin-1;
-		}
-		else {
-			idx = -1;
-		}
-		
-		min_freq = ( expected_bin    * freq_step)+1;
-		max_freq = ((expected_bin+1) * freq_step)-1;
-		freq = min_freq;
-		
-		maxmag = 0.0;
-		maxmagfreq = 0.0;
-		
-		if( modem->verbose ) {
-			printf("  Calibrating for bin %zu %0.1lf Hz - %0.1lf Hz\n",expected_bin,min_freq,max_freq);
-		}
-		
-		//Check every frequency (at 1Hz steps) within the FFT bin
-		//and decide the best frequency to use to get the best
-		//result from the FFT
-		for( freq=min_freq; freq<=max_freq; freq++ ) {
-			if( srcfft_reset(modem->srcfft) ) {
-				if( modem->verbose ) {
-					printf("    Failed to reset srcfft\n");
-				}
-				return -1;
-			}
-			
-			ii = 0;
-			do {
-				//Generate Tone
-				for( k=0; k<modem->mod_sampleslen; k++ ) {
-					mod_samples[k] = sin(2*M_PI*freq*ii/modem->samplerate) *
-									 sin(2*M_PI*modem->sym_freq*ii/modem->samplerate);
-					ii++;
-				}
-				//Execute FFT
-				result = srcfft_process(modem->srcfft,mod_samples,mod_sampleslen);
-				if( result == SRCFFT_ERROR || modem->srcfft->used_samples != modem->mod_sampleslen ) {
-					if( modem->verbose ) {
-						printf("    Failed to process samples\n");
-					}
-					return -1;
-				}
-			} while( result == SRCFFT_NEED_MORE );
-			
-			if( modem->verbose ) {
-				printf("  %06.1lf Hz ",freq);
-				srcfft_printresult(modem->srcfft);
-			}
-			
-			if( modem->srcfft->maxbin != expected_bin ) {
-				//This is a bad freq, don't consider it
-				continue;
-			}
-			if( modem->srcfft->maxmag > maxmag ) {
-				maxmag = modem->srcfft->maxmag;
-				maxmagfreq = freq;
-			}
-		}
-		
-		if( maxmagfreq == 0.0 ) {
-			if( modem->verbose ) {
-				printf("    Failed to determine a frequency for bin %zu\n",expected_bin);
-			}
-			return -1;
-		}
-		
-		if( modem->verbose ) {
-			printf("  Best Frequency: %0.1lf Hz @ %0.1lf\n",maxmagfreq,maxmag);
-		}
-		//Configure new/adjusted frequency
-		if( idx < 0 ) {
-			modem->tones[modem->clkidx] = maxmagfreq;
-		}
-		else {
-			modem->tones[modem->tonesidx[idx]] = maxmagfreq;
-		}
-		
-		//Update (maybe) detection threshhold
-		//threshold is the smallest of the maximum magitudes
-		if( threshmag < 0 || maxmag < threshmag ) {
-			threshmag = maxmag;
-		}
-	}
-	
-	if( modem->verbose ) {
-		printf("  Calculated threshold %lf * %lf = %lf\n",modem->demod_thresh,threshmag,modem->demod_thresh*threshmag);
-	}
-	//if( srcfft_set_norm_thresh(modem->srcfft,modem->demod_thresh) ) {
-	if( srcfft_set_thresh(modem->srcfft,modem->demod_thresh*threshmag) ) {
-		if( modem->verbose ) {
-			printf("  Failed to set srcfft threshold\n");
-		}
-		return -1;
-	}
-	
 	return 0;
 }
 
@@ -418,7 +270,6 @@ int fskclk_demodulate(fskclk_t *modem, uint8_t **data, size_t *datalen, double *
 	size_t   ii;
 	size_t   i;
 	uint8_t *tmpdata;
-	size_t   toneidx;
 	int      sym;
 	srcfft_status_t result;
 	
@@ -452,20 +303,18 @@ int fskclk_demodulate(fskclk_t *modem, uint8_t **data, size_t *datalen, double *
 			srcfft_printresult(modem->srcfft);
 		}
 		
-		//Check for a single peak
+		//Check for signal
 		if( !modem->srcfft->detectlen ) {
 			//Not a definate peak
 			if( modem->demod_state != FSKCLK_DEMOD_CLK_SEARCH ) {
-				modem->demod_sync_loss = modem->demod_sync_loss + (modem->mod_samp_per_sym/8);
-				//printf("  Loosing sync %zu / %zu\n",modem->demod_sync_loss,modem->demod_samp_per_sym);
-				if( modem->demod_sync_loss >= modem->mod_samp_per_sym ) {
+				modem->demod_sync_loss++;
+				if( modem->demod_sync_loss >= FSKCLK_OVERSAMPLE ) {
 					if( modem->verbose ) {
 						printf("  Sync lost\n");
 					}
 					modem->demod_state = FSKCLK_DEMOD_CLK_SEARCH;
 				}
 			}
-			continue;
 		} else {
 			modem->demod_sync_loss = 0;
 		}

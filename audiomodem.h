@@ -44,11 +44,11 @@ audiomodem_t *audiomodem_fskclk_init(size_t samplerate, size_t bitrate, size_t b
 	
 	modem = malloc(sizeof(audiomodem_t));
 	if( !modem ) { return 0; }
+	memset(modem,0,sizeof(audiomodem_t));
 	
 	modem->type = COMPAT_FSKCLK;
 	modem->fskclk = fskclk_init(samplerate,bitrate,bandwidth,tone_count);
 	if( !modem->fskclk ) { audiomodem_destroy(modem); return 0; }
-	modem->pkt = 0;
 	return modem;
 }
 

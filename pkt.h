@@ -31,13 +31,13 @@ typedef struct {
 } pkt_t;
 
 pkt_t *pkt_init();
-void   pkt_destroy(pkt_t *modem);
-int    pkt_set_redundancy(pkt_t *modem, size_t redundancy);
-int    pkt_set_sync(pkt_t *modem, uint8_t *sync, size_t synclen);
-int    pkt_set_mask(pkt_t *modem, uint8_t *mask, size_t masklen);
-int    pkt_set_verbose(pkt_t *modem, int verbose);
-int    pkt_tx(pkt_t *modem, uint8_t **pktdata, size_t *pktdatalen, uint8_t *rawdata, size_t rawdatalen);
-int    pkt_rx(pkt_t *modem, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, size_t rawdatalen);
+void   pkt_destroy(pkt_t *pkt);
+int    pkt_set_redundancy(pkt_t *pkt, size_t redundancy);
+int    pkt_set_sync(pkt_t *pkt, uint8_t *sync, size_t synclen);
+int    pkt_set_mask(pkt_t *pkt, uint8_t *mask, size_t masklen);
+int    pkt_set_verbose(pkt_t *pkt, int verbose);
+int    pkt_tx(pkt_t *pkt, uint8_t **pktdata, size_t *pktdatalen, uint8_t *rawdata, size_t rawdatalen);
+int    pkt_rx(pkt_t *pkt, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, size_t rawdatalen);
 
 #endif //__PKT_H__
 
@@ -45,103 +45,103 @@ int    pkt_rx(pkt_t *modem, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdat
 #undef PKT_IMPLEMENTATION
 
 pkt_t *pkt_init() {
-	pkt_t *modem;
+	pkt_t *pkt;
 	
-	modem = (pkt_t*)malloc(sizeof(pkt_t));
-	if( !modem ) { return 0; }
-	memset(modem,0,sizeof(pkt_t));
+	pkt = (pkt_t*)malloc(sizeof(pkt_t));
+	if( !pkt ) { return 0; }
+	memset(pkt,0,sizeof(pkt_t));
 
-	modem->redundancy = PKT_DEFAULT_REDUNDANCY;
+	pkt->redundancy = PKT_DEFAULT_REDUNDANCY;
 	
-	modem->sync = (uint8_t*)malloc(sizeof(uint8_t)*2);
-	if( !modem->sync ) { goto pkt_init_error; }
-	modem->sync[0] = PKT_DEFAULT_SYNC_0;
-	modem->sync[1] = PKT_DEFAULT_SYNC_1;
-	modem->synclen = 2;
+	pkt->sync = (uint8_t*)malloc(sizeof(uint8_t)*2);
+	if( !pkt->sync ) { goto pkt_init_error; }
+	pkt->sync[0] = PKT_DEFAULT_SYNC_0;
+	pkt->sync[1] = PKT_DEFAULT_SYNC_1;
+	pkt->synclen = 2;
 	
-	modem->rx_sync = (uint8_t*)malloc(sizeof(uint8_t)*modem->synclen);
-	if( !modem->rx_sync ) { goto pkt_init_error; }
-	memset(modem->rx_sync,0,2);
-	modem->rx_synclen = modem->synclen;
+	pkt->rx_sync = (uint8_t*)malloc(sizeof(uint8_t)*pkt->synclen);
+	if( !pkt->rx_sync ) { goto pkt_init_error; }
+	memset(pkt->rx_sync,0,2);
+	pkt->rx_synclen = pkt->synclen;
 	
-	modem->rx_buf = (uint8_t*)malloc(sizeof(uint8_t)*modem->redundancy);
-	if( ! modem->rx_buf ) { goto pkt_init_error; };
+	pkt->rx_buf = (uint8_t*)malloc(sizeof(uint8_t)*pkt->redundancy);
+	if( ! pkt->rx_buf ) { goto pkt_init_error; };
 	
-	modem->mask = (uint8_t*)malloc(sizeof(uint8_t)*2);
-	if( !modem->mask ) { goto pkt_init_error; }
-	modem->mask[0] = PKT_DEFAULT_MASK_0;
-	modem->mask[1] = PKT_DEFAULT_MASK_1;
-	modem->masklen = 2;
+	pkt->mask = (uint8_t*)malloc(sizeof(uint8_t)*2);
+	if( !pkt->mask ) { goto pkt_init_error; }
+	pkt->mask[0] = PKT_DEFAULT_MASK_0;
+	pkt->mask[1] = PKT_DEFAULT_MASK_1;
+	pkt->masklen = 2;
 
-	return modem;
+	return pkt;
 		
 	pkt_init_error:
-	pkt_destroy(modem);
+	pkt_destroy(pkt);
 	return 0;
 }
 
-void pkt_destroy(pkt_t *modem) {
-	if( modem ) {
-		if( modem->sync ) { free(modem->sync); }
-		if( modem->rx_sync ) { free(modem->rx_sync); }
-		if( modem->rx_buf ) { free(modem->rx_buf); }
-		if( modem->mask ) { free(modem->mask); }
-		if( modem->tx_pkt ) { free(modem->tx_pkt); }
-		if( modem->rx_pkt ) { free(modem->rx_pkt); }
-		free(modem);
+void pkt_destroy(pkt_t *pkt) {
+	if( pkt ) {
+		if( pkt->sync ) { free(pkt->sync); }
+		if( pkt->rx_sync ) { free(pkt->rx_sync); }
+		if( pkt->rx_buf ) { free(pkt->rx_buf); }
+		if( pkt->mask ) { free(pkt->mask); }
+		if( pkt->tx_pkt ) { free(pkt->tx_pkt); }
+		if( pkt->rx_pkt ) { free(pkt->rx_pkt); }
+		free(pkt);
 	}
 }
 
-int pkt_set_redundancy(pkt_t *modem, size_t redundancy) {
+int pkt_set_redundancy(pkt_t *pkt, size_t redundancy) {
 	uint8_t *tmp;
 	
-	if( !modem ) { return -1; }
+	if( !pkt ) { return -1; }
 	if( redundancy == 0 ) { redundancy = 1; }
 	if( redundancy % 2 == 0 ) { return 0; }
 	
-	modem->redundancy = redundancy;
-	tmp = (uint8_t*)realloc(modem->rx_buf,sizeof(uint8_t)*modem->redundancy);
+	pkt->redundancy = redundancy;
+	tmp = (uint8_t*)realloc(pkt->rx_buf,sizeof(uint8_t)*pkt->redundancy);
 	if( !tmp ) { return -1; }
-	modem->rx_buf = tmp;
+	pkt->rx_buf = tmp;
 }
 
-int pkt_set_sync(pkt_t *modem, uint8_t *sync, size_t synclen) {
+int pkt_set_sync(pkt_t *pkt, uint8_t *sync, size_t synclen) {
 	uint8_t *tmp;
-	if( !modem ) { return -1; }
-	tmp = (uint8_t*)realloc(modem->sync,sizeof(uint8_t)*synclen);
+	if( !pkt ) { return -1; }
+	tmp = (uint8_t*)realloc(pkt->sync,sizeof(uint8_t)*synclen);
 	if( !tmp ) { return -1; }
-	modem->sync = tmp;
-	modem->synclen = synclen;
-	memcpy(modem->sync,sync,synclen);
+	pkt->sync = tmp;
+	pkt->synclen = synclen;
+	memcpy(pkt->sync,sync,synclen);
 	
-	tmp = (uint8_t*)realloc(modem->rx_sync,sizeof(uint8_t)*synclen);
+	tmp = (uint8_t*)realloc(pkt->rx_sync,sizeof(uint8_t)*synclen);
 	if( !tmp ) { return -1; }
-	modem->rx_sync = tmp;
-	modem->rx_synclen = synclen;
-	memset(modem->rx_sync,0,synclen);
+	pkt->rx_sync = tmp;
+	pkt->rx_synclen = synclen;
+	memset(pkt->rx_sync,0,synclen);
 	
-	modem->rx_synced = 0;
+	pkt->rx_synced = 0;
 	return 0;
 }
 
-int pkt_set_mask(pkt_t *modem, uint8_t *mask, size_t masklen) {
+int pkt_set_mask(pkt_t *pkt, uint8_t *mask, size_t masklen) {
 	uint8_t *tmp;
-	if( !modem ) { return -1; }
-	tmp = (uint8_t*)realloc(modem->mask,sizeof(uint8_t)*masklen);
+	if( !pkt ) { return -1; }
+	tmp = (uint8_t*)realloc(pkt->mask,sizeof(uint8_t)*masklen);
 	if( !tmp ) { return -1; }
-	modem->mask = tmp;
-	modem->masklen = masklen;
-	memcpy(modem->mask,mask,masklen);
+	pkt->mask = tmp;
+	pkt->masklen = masklen;
+	memcpy(pkt->mask,mask,masklen);
 	return 0;
 }
 
-int pkt_set_verbose(pkt_t *modem, int verbose) {
-	if( !modem ) { return -1; }
-	modem->verbose = verbose;
+int pkt_set_verbose(pkt_t *pkt, int verbose) {
+	if( !pkt ) { return -1; }
+	pkt->verbose = verbose;
 	return 0;
 }
 
-int pkt_tx(pkt_t *modem, uint8_t **pktdata, size_t *pktdatalen, uint8_t *rawdata, size_t rawdatalen) {
+int pkt_tx(pkt_t *pkt, uint8_t **pktdata, size_t *pktdatalen, uint8_t *rawdata, size_t rawdatalen) {
 	uint8_t *tmp;
 	size_t i,j;
 	size_t dst;
@@ -149,13 +149,13 @@ int pkt_tx(pkt_t *modem, uint8_t **pktdata, size_t *pktdatalen, uint8_t *rawdata
 	uint8_t pktlen16[2];
 	size_t pktalloc;
 	
-	if( !modem ) { return -1; }
+	if( !pkt ) { return -1; }
 	if( !pktdata ) { return -1; }
 	if( !pktdatalen ) { return -1; }
 	if( !rawdata ) { return -1; }
 	if( rawdatalen > 0xffff ) { return -1; }
 	
-	if( modem->verbose ) {
+	if( pkt->verbose ) {
 		printf("pkt_tx(...):\n");
 		printf("  Raw: ");
 		for( i=0; i<rawdatalen; i++ ) {
@@ -164,19 +164,19 @@ int pkt_tx(pkt_t *modem, uint8_t **pktdata, size_t *pktdatalen, uint8_t *rawdata
 		printf("\n");
 	}
 	
-	pktalloc = (modem->synclen+2+rawdatalen)*modem->redundancy;
-	tmp = realloc(modem->tx_pkt,pktalloc);
+	pktalloc = (pkt->synclen+2+rawdatalen)*pkt->redundancy;
+	tmp = realloc(pkt->tx_pkt,pktalloc);
 	if( !tmp ) { return -1; }
-	modem->tx_pkt = tmp;
-	modem->tx_pktlen = pktalloc;
-	memset(modem->tx_pkt,0,pktalloc);
+	pkt->tx_pkt = tmp;
+	pkt->tx_pktlen = pktalloc;
+	memset(pkt->tx_pkt,0,pktalloc);
 	
 	//Pack the redundant bits of the sync
 	dst = 0;
-	for( i=0; i<modem->synclen*8; i++ ) {
-		bit = getbits(modem->sync, modem->synclen, i, 1);
-		for( j=0; j<modem->redundancy; j++ ) {
-			putbits(modem->tx_pkt, modem->tx_pktlen, dst++, 1, bit);
+	for( i=0; i<pkt->synclen*8; i++ ) {
+		bit = getbits(pkt->sync, pkt->synclen, i, 1);
+		for( j=0; j<pkt->redundancy; j++ ) {
+			putbits(pkt->tx_pkt, pkt->tx_pktlen, dst++, 1, bit);
 		}
 	}
 	pktlen16[0] = (rawdatalen>>8)&0xff;
@@ -184,37 +184,37 @@ int pkt_tx(pkt_t *modem, uint8_t **pktdata, size_t *pktdatalen, uint8_t *rawdata
 	//Pack the redundant bits of packet length
 	for( i=0; i<16; i++ ) {
 		bit = getbits(pktlen16,2,i,1);
-		for( j=0; j<modem->redundancy; j++ ) {
-			putbits(modem->tx_pkt, modem->tx_pktlen, dst++, 1, bit);
+		for( j=0; j<pkt->redundancy; j++ ) {
+			putbits(pkt->tx_pkt, pkt->tx_pktlen, dst++, 1, bit);
 		}
 	}
 	//Pack the redundant bits of the data
 	for( i=0; i<rawdatalen*8; i++ ) {
 		bit = getbits(rawdata, rawdatalen, i, 1);
-		for( j=0; j<modem->redundancy; j++ ) {
-			putbits(modem->tx_pkt, modem->tx_pktlen, dst++, 1, bit);
+		for( j=0; j<pkt->redundancy; j++ ) {
+			putbits(pkt->tx_pkt, pkt->tx_pktlen, dst++, 1, bit);
 		}
 	}
 	//Apply the mask (after the sync)
-	for( i=modem->synclen*modem->redundancy, j=0; i<modem->tx_pktlen; i++, j++ ) {
-		modem->tx_pkt[i] = modem->tx_pkt[i] ^ modem->mask[j%modem->masklen];
+	for( i=pkt->synclen*pkt->redundancy, j=0; i<pkt->tx_pktlen; i++, j++ ) {
+		pkt->tx_pkt[i] = pkt->tx_pkt[i] ^ pkt->mask[j%pkt->masklen];
 	}
 	
-	if( modem->verbose ) {
+	if( pkt->verbose ) {
 		printf("  Pkt: ");
-		for( i=0; i<modem->tx_pktlen; i++ ) {
-			printf("%02x ",modem->tx_pkt[i]);
+		for( i=0; i<pkt->tx_pktlen; i++ ) {
+			printf("%02x ",pkt->tx_pkt[i]);
 		}
 		printf("\n");
 	}
 	
 	//Return the packed data
-	*pktdata = modem->tx_pkt;
-	*pktdatalen = modem->tx_pktlen;
+	*pktdata = pkt->tx_pkt;
+	*pktdatalen = pkt->tx_pktlen;
 	return 0;
 }
 
-int pkt_rx(pkt_t *modem, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, size_t rawdatalen) {
+int pkt_rx(pkt_t *pkt, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, size_t rawdatalen) {
 	size_t bitoff;
 	size_t rawoff;
 	size_t i;
@@ -224,12 +224,12 @@ int pkt_rx(pkt_t *modem, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, 
 	uint8_t *tmp;
 	uint16_t pktlen16;
 	
-	if( !modem ) { return -1; }
+	if( !pkt ) { return -1; }
 	if( !rxdata ) { return -1; }
 	if( !rxdatalen ) { return -1; }
 	if( !rawdata && rawdatalen ) { return -1; }
 	
-	if( modem->verbose ) {
+	if( pkt->verbose ) {
 		printf("pkt_rx(...):\n");
 		printf("  Raw: ");
 		for( i=0; i<rawdatalen; i++ ) {
@@ -241,84 +241,84 @@ int pkt_rx(pkt_t *modem, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, 
 	rawoff = 0;
 	while( rawoff < rawdatalen ) {
 		//Move redudancy worth of bytes into initial buffer
-		while( modem->rx_buflen < modem->redundancy && rawoff < rawdatalen ) {
-			modem->rx_buf[modem->rx_buflen++] = rawdata[rawoff++];
+		while( pkt->rx_buflen < pkt->redundancy && rawoff < rawdatalen ) {
+			pkt->rx_buf[pkt->rx_buflen++] = rawdata[rawoff++];
 		}
 	
-		if( modem->rx_buflen == modem->redundancy ) {
+		if( pkt->rx_buflen == pkt->redundancy ) {
 			//Process bits in rx_buf
 			bitoff = 0;
-			while( bitoff < modem->rx_buflen*8 ) {
+			while( bitoff < pkt->rx_buflen*8 ) {
 				//Pull redundant bits and vote
 				bit_votes = 0;
-				for( i=0; i<modem->redundancy; i++ ) {
-					bit = getbits(modem->rx_buf, modem->rx_buflen, bitoff++, 1);
-					if( modem->rx_synced ) {
+				for( i=0; i<pkt->redundancy; i++ ) {
+					bit = getbits(pkt->rx_buf, pkt->rx_buflen, bitoff++, 1);
+					if( pkt->rx_synced ) {
 						//Apply the mask for all bits after the sync
-						mask = getbits(modem->mask,modem->masklen,(modem->rx_bitoff*modem->redundancy+i)%(modem->masklen*8),1);
+						mask = getbits(pkt->mask,pkt->masklen,(pkt->rx_bitoff*pkt->redundancy+i)%(pkt->masklen*8),1);
 						bit = bit ^ mask;
 					}
 					bit_votes = bit_votes + bit;
 				}
 				//Reduce the votes down to a singel bit
-				if( bit_votes > modem->redundancy/2 ) {
+				if( bit_votes > pkt->redundancy/2 ) {
 					bit = 1;
 				}
 				else {
 					bit = 0;
 				}
 				
-				if( !modem->rx_synced ) {
+				if( !pkt->rx_synced ) {
 					//Try to find the sync
-					shiftbits(modem->rx_sync,modem->rx_synclen,1);
-					putbits(modem->rx_sync,modem->rx_synclen,modem->rx_synclen*8-1,1,bit);
-					if( modem->verbose ) {
+					shiftbits(pkt->rx_sync,pkt->rx_synclen,1);
+					putbits(pkt->rx_sync,pkt->rx_synclen,pkt->rx_synclen*8-1,1,bit);
+					if( pkt->verbose ) {
 						printf("  Testing Sync: ");
-						for( i=0; i<modem->synclen; i++ ) {
-							printf("%02x ",modem->rx_sync[i]);
+						for( i=0; i<pkt->synclen; i++ ) {
+							printf("%02x ",pkt->rx_sync[i]);
 						}
 						printf("\n");
 					}
-					if( !memcmp(modem->rx_sync, modem->sync, modem->synclen) ) {
-						if( modem->verbose ) {
+					if( !memcmp(pkt->rx_sync, pkt->sync, pkt->synclen) ) {
+						if( pkt->verbose ) {
 							printf("  Found Sync\n");
 						}
-						modem->rx_synced = 1;
-						modem->rx_bitoff = 0;
-						tmp = (uint8_t*)realloc(modem->rx_pkt,2);
+						pkt->rx_synced = 1;
+						pkt->rx_bitoff = 0;
+						tmp = (uint8_t*)realloc(pkt->rx_pkt,2);
 						if( !tmp ) { return -1; }
-						modem->rx_pkt = tmp;
-						modem->rx_pktlen = 2;
-						memset(modem->rx_pkt,0,2);
-						memset(modem->rx_sync,0,modem->rx_synclen);
+						pkt->rx_pkt = tmp;
+						pkt->rx_pktlen = 2;
+						memset(pkt->rx_pkt,0,2);
+						memset(pkt->rx_sync,0,pkt->rx_synclen);
 					}
 				}
 				else {
 					//Put the bit in the rx_pkt buffer
-					putbits(modem->rx_pkt,modem->rx_pktlen,modem->rx_bitoff++,1,bit);
-					if( modem->rx_bitoff == 16 ) {
+					putbits(pkt->rx_pkt,pkt->rx_pktlen,pkt->rx_bitoff++,1,bit);
+					if( pkt->rx_bitoff == 16 ) {
 						//Read the packet size and realloc the buffer
-						pktlen16 = (modem->rx_pkt[0]<<8) | (modem->rx_pkt[1]);
-						if( modem->verbose ) {
+						pktlen16 = (pkt->rx_pkt[0]<<8) | (pkt->rx_pkt[1]);
+						if( pkt->verbose ) {
 							printf("  Packet Length: %u\n",pktlen16);
 						}
-						tmp = (uint8_t*)realloc(modem->rx_pkt,2+pktlen16);
+						tmp = (uint8_t*)realloc(pkt->rx_pkt,2+pktlen16);
 						if( !tmp ) { return -1; }
-						modem->rx_pkt = tmp;
-						modem->rx_pktlen = 2+pktlen16;
-						memset(modem->rx_pkt+2,0,pktlen16);
+						pkt->rx_pkt = tmp;
+						pkt->rx_pktlen = 2+pktlen16;
+						memset(pkt->rx_pkt+2,0,pktlen16);
 					}
-					else if( modem->rx_bitoff >= modem->rx_pktlen*8 ) {
+					else if( pkt->rx_bitoff >= pkt->rx_pktlen*8 ) {
 						//We've finish reading the complete packet
 						//Set the return variable and forget anything else
-						*rxdata = modem->rx_pkt+2;
-						*rxdatalen = modem->rx_pktlen-2;
-						modem->rx_synced = 0;
-						modem->rx_buflen = 0;
-						if( modem->verbose ) {
+						*rxdata = pkt->rx_pkt+2;
+						*rxdatalen = pkt->rx_pktlen-2;
+						pkt->rx_synced = 0;
+						pkt->rx_buflen = 0;
+						if( pkt->verbose ) {
 							printf("  Pkt: ");
-							for( i=2; i<modem->rx_pktlen; i++ ) {
-								printf("%02x ",modem->rx_pkt[i]);
+							for( i=2; i<pkt->rx_pktlen; i++ ) {
+								printf("%02x ",pkt->rx_pkt[i]);
 							}
 							printf("\n");
 						}
@@ -326,7 +326,7 @@ int pkt_rx(pkt_t *modem, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, 
 					}
 				}
 			}
-			modem->rx_buflen = 0;
+			pkt->rx_buflen = 0;
 		}
 	}
 	

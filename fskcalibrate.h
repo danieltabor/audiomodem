@@ -18,7 +18,7 @@ int fskcalibrate(double *freqs, size_t freqslen, srcfft_t *srcfft, size_t sample
 	//to ensure that the pure symbol tones will be received in 
 	//the correct FFT bins with the greast value
 	size_t ii;
-	size_t j,k;
+	size_t k;
 	size_t fftbin;
 	
 	size_t sampleslen = 0;
@@ -33,7 +33,6 @@ int fskcalibrate(double *freqs, size_t freqslen, srcfft_t *srcfft, size_t sample
 	double maxmagfreq;
 	
 	double threshmag = -1;
-	ssize_t idx;
 	srcfft_status_t result;
 	
 	if( !srcfft ) { goto fskcalibrate_error; }
@@ -48,7 +47,7 @@ int fskcalibrate(double *freqs, size_t freqslen, srcfft_t *srcfft, size_t sample
 	samples = (double*)malloc(sizeof(double)*sampleslen);
 	if( !samples ) {
 		#if (FSKCALIBRATE_VERBOSE)
-			printf("  realloc failed");
+			printf("  malloc failed");
 		#endif
 		goto fskcalibrate_error;
 	}

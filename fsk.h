@@ -6,17 +6,16 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#include <samplerate.h>
-#include <fftw3.h>
-
 #include "bitops.h"
+#include "srcfft.h"
 
 #define FSK_DEFAULT_VERBOSE     0
-#define FSK_DEFAULT_THRESH      0.90
+#define FSK_DEFAULT_THRESH      0.50
 
 typedef enum{
 	FSK_DEMOD_SEARCH,
 	FSK_DEMOD_ACQUIRE,
+	FSK_DEMOD_DETECTED,
 } fsk_demod_state_t;
 
 typedef struct {
@@ -29,28 +28,16 @@ typedef struct {
 	double  *tones;
 	
 	size_t   mod_samp_per_sym;
-	size_t   demod_samp_per_sym;
+	size_t   demod_samp_per_fft;
 	double  *mod_samples;
 	size_t   mod_sampleslen;
 	double   sym_freq;
 	
+	srcfft_t *srcfft;
 	fsk_demod_state_t demod_state;
-	SRC_STATE *demod_src;
-	float     *demod_srcin;
-	size_t     demod_srcinlen;
-	size_t     demod_srcin_alloc;
-	float     *demod_srcout;
-	size_t     demod_srcout_alloc;
-	size_t     demod_srcoutlen;
 	
-	size_t     demod_sync_skip;
-	
-	size_t     demod_bins;
-	fftw_plan  demod_plan;
-	double    *demod_fftin;
-	fftw_complex *demod_fftout;
-	double    *demod_fftmag;
 	size_t     demod_sync_loss;
+	size_t     demod_fft_skip;
 	double     demod_thresh;
 	size_t     demod_databin;
 	
@@ -75,10 +62,10 @@ int    fsk_demodulate(fsk_t *modem, uint8_t **data, size_t *datalen, double *sam
 #ifdef FSK_IMPLEMENTATION
 #undef FSK_IMPLEMENTATION
 
+#define FSK_OVERSAMPLE 4
+
 fsk_t *fsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t tone_count) {
 	fsk_t *modem;
-	double freq_step;
-	double freq;
 	size_t i;
 	
 	//Double check arguments
@@ -104,50 +91,25 @@ fsk_t *fsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t tone
 	modem->tones = (double*)malloc(sizeof(double)*modem->tone_count);
 	if( !modem->tones ) { goto fsk_init_error; }
 	
-	//Calculate the frequencies used
-	freq_step = bandwidth / modem->tone_count;
-	freq = freq_step / 2;
-	for( i=0; i<modem->tone_count; i++ ) {
-		modem->tones[i] = freq;
-		freq = freq + freq_step;
-	}
-	
 	//Samples to produce per clock cycle on modulation
 	modem->sym_freq = ((double)bitrate / (double)modem->bit_per_tone);
 	modem->mod_samp_per_sym = (double)samplerate / modem->sym_freq;
 	if( modem->mod_samp_per_sym < 2 ) { goto fsk_init_error; }
-	modem->demod_samp_per_sym = (double)(bandwidth*2) / modem->sym_freq;
-	if( modem->demod_samp_per_sym < modem->tone_count*6 ) { goto fsk_init_error; }
+	//Make sure that we are measureing the signal fast enough to 
+	//catch as least FSK_OVERSAMPLE measurements of both the 
+	//clk and the data
+	modem->demod_samp_per_fft = modem->mod_samp_per_sym/FSK_OVERSAMPLE;
 	
-	//Samplerate conveter
-	modem->demod_src = src_new(SRC_SINC_MEDIUM_QUALITY,1,0);
-	if( !modem->demod_src ) { goto fsk_init_error; }
-	//Make sure we are analyzing chunks small enough to guarantee that we
-	//will see a symbols for at least 2 clean ffts
-	modem->demod_srcin_alloc = modem->mod_samp_per_sym / 3;
-	modem->demod_srcin  = (float*)malloc(sizeof(float) * modem->demod_srcin_alloc);
-	if( !modem->demod_srcin ) { goto fsk_init_error; }
-	modem->demod_srcout_alloc = modem->demod_samp_per_sym / 3;
-	modem->demod_srcout = (float*)malloc(sizeof(float) * modem->demod_srcout_alloc);
-	if( !modem->demod_srcout ) { goto fsk_init_error; }
+	//Create the Samplerate converting FFT object
+	modem->srcfft = srcfft_init(samplerate,modem->demod_samp_per_fft,bandwidth,modem->tone_count);
+	if( !modem->srcfft ) { goto fsk_init_error; }
+	modem->demod_thresh = FSK_DEFAULT_THRESH;
 	
-	//FFT
-	//Because these are real samples, only the first half of the fft results (DC->nyquist) will be valid
-	//The second half (-nyquist->DC) will all be zero
-	modem->demod_bins = modem->demod_srcout_alloc / 2;
-	if( modem->demod_bins < modem->tone_count ) {
-		//The FFT resolution isn't good enough to differentiate tones
-		//printf("FFT resolution is too small %zu < %zu\n",modem->demod_bins,modem->tone_count);
+	//Calculate optimal frequencies to use
+	if( fskcalibrate(modem->tones, modem->tone_count, modem->srcfft, 
+	                 modem->samplerate, modem->bandwidth, modem->demod_thresh) ) {
 		goto fsk_init_error;
 	}
-	modem->demod_fftin  = (double*)fftw_malloc(sizeof(double) * modem->demod_srcout_alloc);
-	if( !modem->demod_fftin ) { goto fsk_init_error; }
-	modem->demod_fftout = (fftw_complex*)fftw_malloc(sizeof(fftw_complex) * modem->demod_srcout_alloc);
-	if( !modem->demod_fftout ) { goto fsk_init_error; }
-	modem->demod_plan   = fftw_plan_dft_r2c_1d(modem->demod_srcout_alloc, modem->demod_fftin, modem->demod_fftout,  FFTW_MEASURE);
-	modem->demod_fftmag = (double*)malloc(sizeof(double)* modem->tone_count);
-	if( !modem->demod_fftmag ) { goto fsk_init_error; }
-	modem->demod_thresh = FSK_DEFAULT_THRESH;
 	
 	modem->demod_state = FSK_DEMOD_SEARCH;
 	
@@ -161,13 +123,8 @@ fsk_t *fsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t tone
 void fsk_destroy(fsk_t *modem) {
 	if( modem ) {
 		if( modem->tones ) { free(modem->tones); }
+		if( modem->srcfft ) { srcfft_destroy(modem->srcfft); }
 		if( modem->mod_samples ) { free(modem->mod_samples); }
-		if( modem->demod_src ) { src_delete(modem->demod_src); }
-		if( modem->demod_srcin ) { free(modem->demod_srcin); }
-		if( modem->demod_srcout ) { free(modem->demod_srcout); }
-		if( modem->demod_fftin ) { fftw_free(modem->demod_fftin); }
-		if( modem->demod_fftout ) { fftw_free(modem->demod_fftout); }
-		if( modem->demod_fftmag ) { free(modem->demod_fftmag); }
 		if( modem->demod_data ) { free(modem->demod_data); }
 		memset(modem,0,sizeof(fsk_t));
 		free(modem);
@@ -178,6 +135,10 @@ void fsk_destroy(fsk_t *modem) {
 int fsk_set_thresh(fsk_t *modem, double thresh) {
 	if( !modem ) { return -1; }
 	modem->demod_thresh = thresh;
+	if( fskcalibrate(modem->tones, modem->tone_count, modem->srcfft, 
+	                 modem->samplerate, modem->bandwidth, modem->demod_thresh) ) {
+		return -1;
+	}
 	return 0;
 }
 
@@ -191,13 +152,13 @@ void fsk_printinfo(fsk_t *modem) {
 	size_t i;
 	size_t j;
 	printf("Tone Modem:\n");
-	printf("  Verbose                 :  %d\n",modem->verbose);
-	printf("  Samplerate              : %zu\n",modem->samplerate);
-	printf("  Bitrate                 : %zu bps\n",modem->bitrate);
-	printf("  Bandwidth               : %zu Hz\n",modem->bandwidth);
-	printf("  Bits per Symbol         : %zu\n",modem->bit_per_tone);
-	printf("  Samples per Symbol      : %zu\n",modem->mod_samp_per_sym);
-	printf("  Demod Samples per Symbol: %zu\n",modem->demod_samp_per_sym);
+	printf("  Verbose               :  %d\n",modem->verbose);
+	printf("  Samplerate            : %zu\n",modem->samplerate);
+	printf("  Bitrate               : %zu bps\n",modem->bitrate);
+	printf("  Bandwidth             : %zu Hz\n",modem->bandwidth);
+	printf("  Bits per Symbol       : %zu\n",modem->bit_per_tone);
+	printf("  Samples per Symbol    : %zu\n",modem->mod_samp_per_sym);
+	printf("  Demod Samples per FFT : %zu\n",modem->demod_samp_per_fft);
 	printf("  Tones(%zu):\n",modem->tone_count);
 	for( i=0; i<modem->tone_count; i++ ) {
 		printf("    0x%02lx: %04.1lf Hz\n",i,modem->tones[i]);
@@ -271,18 +232,11 @@ int fsk_modulate(fsk_t *modem, double **samples, size_t *sampleslen, uint8_t *da
 	return -1;
 }
 
-
 int fsk_demodulate(fsk_t *modem, uint8_t **data, size_t *datalen, double *samples, size_t sampleslen) {
-	SRC_DATA src_data;
 	size_t   ii;
-	size_t   i;
-	double   mag;
-	ssize_t  maxbin;
-	double   maxmag;
-	size_t   peak_count;
 	uint8_t *tmpdata;
-	size_t   toneidx;
 	int      sym;
+	srcfft_status_t result;
 	
 	if( !modem ) { return -1; }
 	if( !data ) { return -1; }
@@ -297,110 +251,29 @@ int fsk_demodulate(fsk_t *modem, uint8_t **data, size_t *datalen, double *sample
 	*data = modem->demod_data;
 	*datalen = modem->demod_datalen;
 	
-	src_data.src_ratio = (double)(modem->bandwidth*2) / (double)modem->samplerate;
-	src_data.end_of_input = 0;
-	
 	ii = 0;
 	while( ii < sampleslen ) {
-		//Resample input to match the nyquist rate of the bandwidth
-		while( modem->demod_srcinlen < modem->demod_srcin_alloc && ii < sampleslen ) {
-			modem->demod_srcin[modem->demod_srcinlen] = (float)samples[ii];
-			modem->demod_srcinlen++;
-			ii++;
-		}
-		src_data.data_in       = modem->demod_srcin;
-		src_data.input_frames  = modem->demod_srcinlen;
-		src_data.data_out      = modem->demod_srcout;
-		src_data.output_frames = modem->demod_srcout_alloc - modem->demod_srcoutlen;
-		if( src_process(modem->demod_src, &src_data) ) { 
+		result = srcfft_process(modem->srcfft,samples+ii,sampleslen-ii);
+		ii = ii + modem->srcfft->used_samples;
+		if( result == SRCFFT_ERROR ) { 
 			if( modem->verbose ) {
-				printf("  Samplerate conversion failed\n");
+				printf("  FFT failed\n");
 				return -1; 
 			}
 		}
-		modem->demod_srcinlen  = modem->demod_srcinlen - src_data.input_frames_used;
-		modem->demod_srcoutlen = modem->demod_srcoutlen + src_data.output_frames_gen;
-		
-		//Skip samples to synchonize to a symbol
-		if( modem->demod_sync_skip ) {
-			if( modem->verbose ) {
-				printf("  Skip %zu of %zu samples\n",modem->demod_sync_skip,modem->demod_srcoutlen);
-			}
-			if( modem->demod_sync_skip >= modem->demod_srcoutlen ) {
-				//Skip everytihng currently in the srcout buffer
-				modem->demod_sync_skip = modem->demod_sync_skip - modem->demod_srcoutlen;
-				modem->demod_srcoutlen = 0;
-			}
-			else {
-				//Skip the first part of the srcout buffer
-				for( i=modem->demod_sync_skip; i<modem->demod_srcoutlen; i++ ) {
-					modem->demod_srcout[i-modem->demod_sync_skip] = modem->demod_srcout[i];
-				}
-				modem->demod_srcoutlen = modem->demod_srcoutlen - modem->demod_sync_skip;
-				modem->demod_sync_skip = 0;
-			}
-		}
-		
-		if( modem->demod_srcoutlen < modem->demod_srcout_alloc ) {
-			//Unable to perform one last FFT
-			if( modem->verbose ) {
-				printf("  Need more samples: %zu / %zu\n",modem->demod_srcoutlen,modem->demod_srcout_alloc);
-			}
+		else if( result == SRCFFT_NEED_MORE ) {
 			continue;
 		}
-		
-		//Perform an FFT on resampled audio
-		for( i=0; i<modem->demod_srcoutlen; i++ ) {
-			modem->demod_fftin[i] = (double)modem->demod_srcout[i];
-		}
-		modem->demod_srcoutlen = 0;
-		fftw_execute(modem->demod_plan);
-		
-		//Reduce FFT magnitudes
-		for( i=0; i<modem->tone_count; i++ ) {
-			modem->demod_fftmag[i] = 0;
-		}
-		maxbin = -1;
-		maxmag = -1;
-		for( i=0; i<modem->demod_bins; i++ ) {
-			mag = sqrt(modem->demod_fftout[i][0] * modem->demod_fftout[i][0] + modem->demod_fftout[i][1] * modem->demod_fftout[i][1]);
-			toneidx = i * modem->tone_count / modem->demod_bins;
-			modem->demod_fftmag[toneidx] += mag;
-			if( maxmag < 0 || modem->demod_fftmag[toneidx] > maxmag ) {
-				maxbin = toneidx;
-				maxmag = modem->demod_fftmag[toneidx];
-			}
-		}
-		//Normalize FFT magnitudes
 		if( modem->verbose ) {
-			printf("  fft : ");
-		}
-		peak_count = 0;
-		for( i=0; i<modem->tone_count; i++ ) {
-			if( maxmag == 0 ) {
-				modem->demod_fftmag[i] = 0;
-			} else {
-				modem->demod_fftmag[i] = modem->demod_fftmag[i] / maxmag;
-			}
-			if( modem->demod_fftmag[i] >= modem->demod_thresh ) {
-				peak_count++;
-			}
-			if( modem->verbose ) {
-				printf("%1.2lf ",modem->demod_fftmag[i]);
-			}
-		}
-		if( modem->verbose ) {
-			printf("\n");
-			printf("  Max: %zd  Thresh: %1.2lf  Peaks: %zu\n",maxbin,modem->demod_thresh,peak_count);
+			srcfft_printresult(modem->srcfft);
 		}
 		
-		//Check for a single peak
-		if( peak_count != 1 ) {
+		//Check for signal
+		if( !modem->srcfft->detectlen ) {
 			//Not a definate peak
 			if( modem->demod_state != FSK_DEMOD_SEARCH ) {
-				modem->demod_sync_loss = modem->demod_sync_loss + modem->demod_srcout_alloc;
-				//printf("  Loosing sync %zu / %zu\n",modem->demod_sync_loss,modem->demod_samp_per_sym);
-				if( modem->demod_sync_loss >= modem->demod_samp_per_sym ) {
+				modem->demod_sync_loss++;
+				if( modem->demod_sync_loss >= FSK_OVERSAMPLE ) {
 					if( modem->verbose ) {
 						printf("  Sync lost\n");
 					}
@@ -411,28 +284,27 @@ int fsk_demodulate(fsk_t *modem, uint8_t **data, size_t *datalen, double *sample
 		}
 		
 		modem->demod_sync_loss = 0;
+		sym = modem->srcfft->maxbin;
 		if( modem->demod_state == FSK_DEMOD_SEARCH ) {
 			//First sample of a new data
 			modem->demod_state = FSK_DEMOD_ACQUIRE;
-			modem->demod_databin = maxbin;
+			modem->demod_databin = sym;
 		}
 		else if( modem->demod_state == FSK_DEMOD_ACQUIRE ) {
 			//Possible second sample of data
-			if( modem->demod_databin != maxbin ) {
+			if( modem->demod_databin != sym ) {
 				//Not the data we expected, see if we get this one twice
 				modem->demod_state = FSK_DEMOD_ACQUIRE;
-				modem->demod_databin = maxbin;
+				modem->demod_databin = sym;
 			}
 			else {
 				//Detected data - reset state to look for next symbol
-				modem->demod_state = FSK_DEMOD_SEARCH;
-				//We were search every 0.25 symbols, now skip 0.5 symbols to catch the
-				//next symbol at the same place.
-				modem->demod_sync_skip  = modem->demod_samp_per_sym - (2*modem->demod_srcout_alloc);
-				sym = maxbin;
+				modem->demod_state = FSK_DEMOD_DETECTED;
+				modem->demod_fft_skip = FSK_OVERSAMPLE - 2;
 				if( modem->verbose ) {
 					printf("  Found data 0x%02x\n",sym);
 				}
+				
 				putbits(modem->demod_bytes, sizeof(modem->demod_bytes), modem->demod_bit_count, modem->bit_per_tone, sym);
 				modem->demod_bit_count = modem->demod_bit_count + modem->bit_per_tone;
 				if( modem->demod_bit_count >= 8 ) {
@@ -453,9 +325,20 @@ int fsk_demodulate(fsk_t *modem, uint8_t **data, size_t *datalen, double *sample
 				}
 			}
 		}
-		else {
+		else if( modem->demod_state == FSK_DEMOD_DETECTED ) {
+			if( modem->demod_databin != sym ) {
+				//Changed before we expected
+				modem->demod_fft_skip = 0;
+				modem->demod_state = FSK_DEMOD_ACQUIRE;
+				modem->demod_databin = sym;
+			}
+			else {
+				modem->demod_fft_skip--;
+				if( !modem->demod_fft_skip ) {
+					modem->demod_state = FSK_DEMOD_SEARCH;
+				}
+			}
 		}
-
 	}
 	*data = modem->demod_data;
 	*datalen = modem->demod_datalen;
