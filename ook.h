@@ -17,9 +17,7 @@ typedef enum{
 	OOK_DEMOD_IDLE_ACQUIRE,
 	OOK_DEMOD_IDLE_DETECTED,
 	OOK_DEMOD_START_ACQUIRE,
-	OOK_DEMOD_SKIP,
-	OOK_DEMOD_DATA,
-	OOK_DEMOD_BIT_READY,
+	OOK_DEMOD_CAPTURE,
 } ook_demod_state_t;
 
 typedef struct {
@@ -36,12 +34,9 @@ typedef struct {
 	srcfft_t *srcfft;
 	ook_demod_state_t demod_state;
 	
-	size_t     demod_sync_loss;
-	size_t     demod_fft_skip;
-	
-	int        demod_sym;
-	uint8_t    demod_byte;
-	uint8_t    demod_bit_count;
+	size_t     demod_capture_alloc;
+	size_t     demod_capture_len;
+	uint8_t   *demod_capture;
 	uint8_t   *demod_data;
 	size_t     demod_datalen;
 } ook_t;
@@ -61,7 +56,7 @@ int    ook_demodulate(ook_t *modem, uint8_t **data, size_t *datalen, double *sam
 #ifdef OOK_IMPLEMENTATION
 #undef OOK_IMPLEMENTATION
 
-#define OOK_OVERSAMPLE 4
+#define OOK_OVERSAMPLE 5
 
 ook_t *ook_init(size_t samplerate, size_t bitrate, double frequency) {
 	ook_t *modem;
@@ -88,6 +83,14 @@ ook_t *ook_init(size_t samplerate, size_t bitrate, double frequency) {
 	modem->srcfft = srcfft_init(samplerate,modem->demod_samp_per_fft,samplerate/2,1);
 	if( !modem->srcfft ) { goto ook_init_error; }
 	if( ook_set_thresh(modem,OOK_DEFAULT_THRESH) ) {
+		goto ook_init_error;
+	}
+	
+	//Record captured values (high/low) for an entire Byte:
+	//OOK_OVERSAMPLE for each bit plus start byte and next idle
+	modem->demod_capture_alloc = OOK_OVERSAMPLE * 10;
+	modem->demod_capture = (uint8_t*)malloc(sizeof(uint8_t)*modem->demod_capture_alloc);
+	if( !modem->demod_capture ) {
 		goto ook_init_error;
 	}
 	
@@ -299,6 +302,14 @@ int ook_modulate(ook_t *modem, double **samples, size_t *sampleslen, uint8_t *da
 
 int ook_demodulate(ook_t *modem, uint8_t **data, size_t *datalen, double *samples, size_t sampleslen) {
 	size_t   ii;
+	size_t   j;
+	size_t   start;
+	size_t   end;
+	size_t   symcount;
+	size_t   bitcount;
+	size_t   bitslen;
+	uint8_t  bits[10];
+	uint8_t  databyte;
 	int tone_detected;
 	uint8_t *tmpdata;
 	srcfft_status_t result;
@@ -374,79 +385,98 @@ int ook_demodulate(ook_t *modem, uint8_t **data, size_t *datalen, double *sample
 				if( modem->verbose ) {
 					printf("      Start Byte detected\n");
 				}
-				modem->demod_state = OOK_DEMOD_SKIP;
-				modem->demod_fft_skip = OOK_OVERSAMPLE - 2;
-				modem->demod_sym = 1;
+				modem->demod_capture[0] = tone_detected;
+				modem->demod_capture[1] = tone_detected;
+				modem->demod_capture_len = 2;
+				modem->demod_state = OOK_DEMOD_CAPTURE;
 			}
 		}
-		else if( modem->demod_state == OOK_DEMOD_SKIP ) {
-			if( ( tone_detected &&  modem->demod_sym) ||
-			    (!tone_detected && !modem->demod_sym) ) {
-				//Change sooner than expected
-				if( tone_detected ) {
-					modem->demod_sym = 0;
+		else if( modem->demod_state == OOK_DEMOD_CAPTURE ) {
+			modem->demod_capture[modem->demod_capture_len++] = tone_detected;
+			if( modem->demod_capture_len == modem->demod_capture_alloc ) {
+				if( modem->verbose ) {
+					printf("  Byte Pattern:\n");
+					for( j=0; j<modem->demod_capture_len; j++ ) {
+						if( modem->demod_capture[j] ) {
+							printf("-");
+						}
+						else {
+							printf("_");
+						}
+					}
+					printf("\n");
+				}
+				
+				//Reduce the 
+				bitslen =0;
+				start = 0;
+				end = 1;
+				while( bitslen < 10 && end<=modem->demod_capture_len ) {
+					if( end == modem->demod_capture_len || 
+					    modem->demod_capture[start] != modem->demod_capture[end] ) {
+						symcount = round((double)(end-start)/(double)OOK_OVERSAMPLE);
+						if( modem->verbose ) { printf("    Symcount: %zu\n",symcount); }
+						while( symcount ) {
+							if( bitslen == 10 ) {
+								if( modem->verbose ) { printf("    Too many Bits\n"); }
+								break;
+							}
+							if( modem->demod_capture[start] ) {
+								bits[bitslen++] = 0;
+								if( modem->verbose ) { printf("     Bit: 0\n"); }
+							}
+							else {
+								bits[bitslen++] = 1;
+								if( modem->verbose ) { printf("     Bit: 1\n"); }
+							}
+							symcount--;
+						}
+						start = end;
+					}
+					end++;
+				}
+				
+				//Double check start bit
+				if( bits[0] != 1 ) {
+					if( modem->verbose ) { printf("    No Start Bit\n"); }
+				}
+				
+				if( bitslen >= 9 ) {
+					databyte = 0;
+					for( j=1; j<9; j++ ) {
+						databyte = (databyte) >> 1;
+						if( bits[j] ) {
+							databyte = databyte | 0x80;
+						}
+					}
+					//Push a demodulated byte
+					if( modem->verbose ) {
+						printf("    Byte: %02x\n",databyte);
+					}
+					tmpdata = (uint8_t*)realloc(modem->demod_data,sizeof(uint8_t)*(modem->demod_datalen+1));
+					if( !tmpdata ) {
+						if( modem->verbose ) {
+							printf("      Failed to reallocate data buffer\n");
+						}
+						return -1;
+					}
+					modem->demod_data = tmpdata;
+					modem->demod_data[modem->demod_datalen] = databyte;
+					modem->demod_datalen++;
+				} else {
+					if( modem->verbose ) { printf("    Not enoughBits\n"); }
+				}
+				
+				//Check to see how much of a follow idle we detected
+				if( bitslen == 10 && bits[9] == 0 ) {
+					modem->demod_state = OOK_DEMOD_IDLE_DETECTED;
+				}
+				else if( modem->demod_capture[modem->demod_capture_len-1] == 0 ) {
+					modem->demod_state = OOK_DEMOD_IDLE_ACQUIRE;
 				}
 				else {
-					modem->demod_sym = 1;
+					modem->demod_state = OOK_DEMOD_SEARCH;
 				}
-				modem->demod_state = OOK_DEMOD_BIT_READY;
-				if( modem->verbose ) {
-					printf("    Early Change\n");
-				}
-			}
-			else {
-				modem->demod_fft_skip--;
-				if( !modem->demod_fft_skip ) {
-					modem->demod_state = OOK_DEMOD_DATA;
-				}
-				if( modem->verbose ) {
-					printf("    Ignored (%zu left)\n",modem->demod_fft_skip);
-				}
-			}
-		}
-		else if( modem->demod_state == OOK_DEMOD_DATA ) {
-			if( tone_detected ) {
-				modem->demod_sym = 0;
-			}
-			else {
-				modem->demod_sym = 1;
-			}
-			modem->demod_state = OOK_DEMOD_BIT_READY;
-		}
-		
-		
-		if( modem->demod_state == OOK_DEMOD_BIT_READY ) {
-			if( modem->verbose ) {
-				printf("    Bit: %d\n",modem->demod_sym);
-			}
-			modem->demod_byte = (modem->demod_byte >> 1) | (modem->demod_sym<<7);
-			modem->demod_bit_count++;
-			if( modem->demod_bit_count >= 8 ) {
-				//Push a demodulated byte
-				if( modem->verbose ) {
-					printf("    Data Byte: %02x\n",modem->demod_byte);
-				}
-				tmpdata = (uint8_t*)realloc(modem->demod_data,sizeof(uint8_t)*(modem->demod_datalen+1));
-				if( !tmpdata ) {
-					if( modem->verbose ) {
-						printf("      Failed to reallocate data buffer\n");
-					}
-					return -1;
-				}
-				modem->demod_data = tmpdata;
-				modem->demod_data[modem->demod_datalen] = modem->demod_byte;
-				modem->demod_datalen++;
-				modem->demod_byte = 0;
-				modem->demod_bit_count = 0;
-
-				modem->demod_state = OOK_DEMOD_SEARCH;
-				modem->demod_sync_loss = 0;
-				modem->demod_fft_skip = 0;
-			}
-			else {
-				modem->demod_state = OOK_DEMOD_SKIP;
-				modem->demod_sync_loss = 0;
-				modem->demod_fft_skip = OOK_OVERSAMPLE - 1;
 			}
 		}
 	}
@@ -454,8 +484,8 @@ int ook_demodulate(ook_t *modem, uint8_t **data, size_t *datalen, double *sample
 	*datalen = modem->demod_datalen;
 	if( modem->verbose ) {
 		printf("  Data: ");
-		for( ii=0; ii<modem->demod_datalen; ii++ ) {
-			printf("%02x ",modem->demod_data[ii]);
+		for( j=0; j<modem->demod_datalen; j++ ) {
+			printf("%02x ",modem->demod_data[j]);
 		}
 		printf("\n");
 	}
