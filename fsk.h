@@ -92,7 +92,7 @@ fsk_t *fsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t tone
 	if( !modem->tones ) { goto fsk_init_error; }
 	
 	//Samples to produce per clock cycle on modulation
-	modem->sym_freq = ((double)bitrate / (double)modem->bit_per_tone);
+	modem->sym_freq = ((double)bitrate / (double)modem->bit_per_tone) / 2;
 	modem->mod_samp_per_sym = (double)samplerate / modem->sym_freq;
 	if( modem->mod_samp_per_sym < 2 ) { goto fsk_init_error; }
 	//Make sure that we are measureing the signal fast enough to 

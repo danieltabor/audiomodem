@@ -210,6 +210,78 @@ corr_t *corr_psk_init(size_t samplerate, size_t bitrate, double frequency, size_
 	return 0;
 }
 
+corr_t *corr_fpsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t symbol_count) {
+	corr_sym_t *symbols = 0;
+	size_t ii;
+	size_t j,k;
+	size_t bit_per_sym;
+	double freq_step;
+	double freq;
+	double ang_step;
+	double ang;
+	double sym_freq;
+	size_t samp_per_sym;
+	size_t tone_count;
+	size_t ang_count;
+	size_t sym;
+		
+	if( samplerate < bandwidth*2 ) { return 0; }
+	if( symbol_count < 2 ) { return 0; }
+	
+	symbols = (corr_sym_t*)malloc(sizeof(corr_sym_t)*symbol_count);
+	if( !symbols ) { goto corr_fpsk_init_error; }
+	memset(symbols,0,sizeof(corr_sym_t)*symbol_count);
+	
+	bit_per_sym = 1;
+	while( 1<<bit_per_sym < symbol_count ) {
+		bit_per_sym++;
+	}
+	symbol_count = (1 << bit_per_sym);
+	
+	if( symbol_count > 8 ) {
+		ang_count = 4;
+	}
+	else if( symbol_count >= 4 ) {
+		ang_count = 2;
+	} else {
+		ang_count = 1;
+	}
+	tone_count = symbol_count / ang_count;
+	
+	sym_freq = ((double)bitrate / (double)bit_per_sym) / 2;
+	samp_per_sym = (double)samplerate / sym_freq;
+	
+	freq_step = bandwidth/tone_count;
+	ang_step = (2*M_PI)/ang_count;
+	ang = 0;
+	sym = 0;
+	for( j=0; j<ang_count; j++ ) {
+		freq = freq_step/2;
+		for( k=0; k<tone_count; k++ ) {
+			symbols[sym].samples = (double*)malloc(sizeof(double)*samp_per_sym);
+			if( !symbols[sym].samples ) {
+				goto corr_fpsk_init_error;
+			}
+			symbols[sym].len = samp_per_sym;
+			//printf("Symbol 0x%02x %0.1lf Hz %0.1lf rad\n",sym,freq,ang);
+			for( ii=0; ii<samp_per_sym; ii++ ) {
+				symbols[sym].samples[ii] = sin(2*M_PI*freq*ii/samplerate + ang) *
+										   sin(2*M_PI*sym_freq*ii/samplerate);
+			}
+			freq = freq + freq_step;
+			sym++;
+		}
+		ang = ang + ang_step;
+	}
+	
+	return corr_init(symbols,symbol_count);
+	
+	corr_fpsk_init_error:
+	if( symbols ) { 
+		free(symbols); }
+	return 0;
+}
+
 void corr_destroy(corr_t *modem) {
 	if( modem ) {
 		if( modem->symbols ) { free(modem->symbols); }

@@ -97,7 +97,7 @@ psk_t *psk_init(size_t samplerate, size_t bitrate, size_t bandwidth, double freq
 	modem->symbol_count = (1 << modem->bit_per_symbol);
 	
 	//Samples to produce per clock cycle on modulation
-	modem->sym_freq = ((double)bitrate / (double)modem->bit_per_symbol);
+	modem->sym_freq = ((double)bitrate / (double)modem->bit_per_symbol)/2;
 	modem->mod_samp_per_sym = (double)samplerate / modem->sym_freq;
 	if( modem->mod_samp_per_sym < 2 ) { goto psk_init_error; }
 	//Measure the signal every wave length

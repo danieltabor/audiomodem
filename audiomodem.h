@@ -27,6 +27,7 @@ typedef struct {
 		corr_t   *corr;
 	};
 	pkt_t *pkt;
+	uint8_t *rxdata;
 } audiomodem_t;
 
 audiomodem_t *audiomodem_fskclk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t symbol_count);
@@ -35,6 +36,7 @@ audiomodem_t *audiomodem_ook_init(size_t samplerate, size_t bitrate, size_t band
 audiomodem_t *audiomodem_psk_init(size_t samplerate, size_t bitrate, size_t bandwidth, double freq, size_t symbol_count);
 audiomodem_t *audiomodem_corrfsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t symbol_count);
 audiomodem_t *audiomodem_corrpsk_init(size_t samplerate, size_t bitrate, double freq, size_t symbol_count);
+audiomodem_t *audiomodem_corrfpsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t symbol_count);
 int           audiomodem_pkt_init(audiomodem_t *modem);
 void          audiomodem_destroy(audiomodem_t *modem);
 int           audiomodem_set_thresh(audiomodem_t *modem, double thresh);
@@ -126,6 +128,19 @@ audiomodem_t *audiomodem_corrpsk_init(size_t samplerate, size_t bitrate, double 
 	return modem;
 }
 
+audiomodem_t *audiomodem_corrfpsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t symbol_count) {
+	audiomodem_t *modem;
+	
+	modem = malloc(sizeof(audiomodem_t));
+	if( !modem ) { return 0; }
+	
+	modem->type = COMPAT_CORR;
+	modem->corr = corr_fpsk_init(samplerate,bitrate,bandwidth,symbol_count);
+	if( !modem->corr ) { audiomodem_destroy(modem); return 0; }
+	modem->pkt = 0;
+	return modem;
+}
+
 int audiomodem_pkt_init(audiomodem_t *modem) {
 	if( !modem ) { return -1; }
 	modem->pkt = pkt_init();
@@ -152,6 +167,9 @@ void audiomodem_destroy(audiomodem_t *modem) {
 		}
 		if( modem->pkt ) {
 			pkt_destroy(modem->pkt);
+		}
+		if( modem->rxdata ) {
+			free(modem->rxdata);
 		}
 		memset(modem,0,sizeof(audiomodem_t));
 		free(modem);
@@ -274,8 +292,13 @@ int audiomodem_modulate(audiomodem_t *modem, double **samples, size_t *samplesle
 }
 
 int audiomodem_demodulate(audiomodem_t *modem, uint8_t **data, size_t *datalen, double *samples, size_t sampleslen) {
-	uint8_t *demod_data;
-	size_t   demod_datalen;
+	uint8_t   *demod_data;
+	size_t     demod_datalen;
+	pktdata_t *pkts;
+	size_t     pktslen;
+	size_t     i,j;
+	uint8_t   *tmp;
+	size_t     rxdatalen = 0;
 	
 	if( !modem ) { return -1; }
 	
@@ -309,8 +332,30 @@ int audiomodem_demodulate(audiomodem_t *modem, uint8_t **data, size_t *datalen, 
 	}
 	
 	if( modem->pkt ) {
-		if( pkt_rx(modem->pkt,data,datalen,demod_data,demod_datalen) ) {
+		if( pkt_rx(modem->pkt,&pkts,&pktslen,demod_data,demod_datalen) ) {
 			return -1;
+		}
+		if( pktslen == 0 ) {
+			*data = 0;
+			*datalen = 0;
+		}
+		else if( pktslen == 1 ) {
+			*data = pkts[0].data;
+			*datalen = pkts[0].len;
+		}
+		else {
+			for( i=0; i<pktslen; i++ ) {
+				tmp = (uint8_t*)realloc(modem->rxdata,sizeof(uint8_t)*(rxdatalen+pkts[i].len));
+				if( !tmp ) {
+					return -1;
+				}
+				modem->rxdata = tmp;
+				for( j=0; j<pkts[i].len; j++ ) {
+					modem->rxdata[rxdatalen++] = pkts[i].data[j];
+				}
+			}
+			*data = modem->rxdata;
+			*datalen = rxdatalen;
 		}
 	} else {
 		*data = demod_data;

@@ -3,11 +3,17 @@
 
 #include "bitops.h"
 
+#define PKT_DEFAULT_VERBOSE     0
 #define PKT_DEFAULT_REDUNDANCY  1
 #define PKT_DEFAULT_SYNC_0      0xC9
 #define PKT_DEFAULT_SYNC_1      0x3F
 #define PKT_DEFAULT_MASK_0      0x5A
 #define PKT_DEFAULT_MASK_1      0xA5
+
+typedef struct {
+	uint8_t *data;
+	size_t   len;
+} pktdata_t;
 
 typedef struct {
 	int      verbose;
@@ -26,8 +32,11 @@ typedef struct {
 	uint8_t *rx_buf;
 	size_t   rx_buflen;
 	size_t   rx_bitoff;
-	uint8_t *rx_pkt;
-	size_t   rx_pktlen;
+	
+	uint8_t    *rx_data;
+	size_t      rx_datalen;
+	pktdata_t  *rx_pkts;
+	size_t      rx_pktslen;
 } pkt_t;
 
 pkt_t *pkt_init();
@@ -37,7 +46,7 @@ int    pkt_set_sync(pkt_t *pkt, uint8_t *sync, size_t synclen);
 int    pkt_set_mask(pkt_t *pkt, uint8_t *mask, size_t masklen);
 int    pkt_set_verbose(pkt_t *pkt, int verbose);
 int    pkt_tx(pkt_t *pkt, uint8_t **pktdata, size_t *pktdatalen, uint8_t *rawdata, size_t rawdatalen);
-int    pkt_rx(pkt_t *pkt, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, size_t rawdatalen);
+int    pkt_rx(pkt_t *pkt, pktdata_t **rxpkts, size_t *rxpktslen, uint8_t *rawdata, size_t rawdatalen);
 
 #endif //__PKT_H__
 
@@ -51,6 +60,7 @@ pkt_t *pkt_init() {
 	if( !pkt ) { return 0; }
 	memset(pkt,0,sizeof(pkt_t));
 
+	pkt->verbose    = PKT_DEFAULT_VERBOSE;
 	pkt->redundancy = PKT_DEFAULT_REDUNDANCY;
 	
 	pkt->sync = (uint8_t*)malloc(sizeof(uint8_t)*2);
@@ -81,13 +91,21 @@ pkt_t *pkt_init() {
 }
 
 void pkt_destroy(pkt_t *pkt) {
+	size_t i;
 	if( pkt ) {
 		if( pkt->sync ) { free(pkt->sync); }
 		if( pkt->rx_sync ) { free(pkt->rx_sync); }
 		if( pkt->rx_buf ) { free(pkt->rx_buf); }
 		if( pkt->mask ) { free(pkt->mask); }
 		if( pkt->tx_pkt ) { free(pkt->tx_pkt); }
-		if( pkt->rx_pkt ) { free(pkt->rx_pkt); }
+		if( pkt->rx_data ) { free(pkt->rx_data); }
+		if( pkt->rx_pkts ) {
+			for( i=0; i<pkt->rx_pktslen; i++ ) {
+				if( pkt->rx_pkts[i].data ) { 
+					free(pkt->rx_pkts[i].data);
+				}
+			}
+		}
 		free(pkt);
 	}
 }
@@ -201,7 +219,7 @@ int pkt_tx(pkt_t *pkt, uint8_t **pktdata, size_t *pktdatalen, uint8_t *rawdata, 
 	}
 	
 	if( pkt->verbose ) {
-		printf("  Pkt: ");
+		printf("  Pkt[%zu]: ",pkt->tx_pktlen);
 		for( i=0; i<pkt->tx_pktlen; i++ ) {
 			printf("%02x ",pkt->tx_pkt[i]);
 		}
@@ -214,7 +232,7 @@ int pkt_tx(pkt_t *pkt, uint8_t **pktdata, size_t *pktdatalen, uint8_t *rawdata, 
 	return 0;
 }
 
-int pkt_rx(pkt_t *pkt, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, size_t rawdatalen) {
+int pkt_rx(pkt_t *pkt, pktdata_t **rx, size_t *rxlen, uint8_t *rawdata, size_t rawdatalen) {
 	size_t bitoff;
 	size_t rawoff;
 	size_t i;
@@ -225,9 +243,12 @@ int pkt_rx(pkt_t *pkt, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, si
 	uint16_t pktlen16;
 	
 	if( !pkt ) { return -1; }
-	if( !rxdata ) { return -1; }
-	if( !rxdatalen ) { return -1; }
+	if( !rx ) { return -1; }
+	if( !rxlen ) { return -1; }
 	if( !rawdata && rawdatalen ) { return -1; }
+	
+	*rx = 0;
+	*rxlen = 0;
 	
 	if( pkt->verbose ) {
 		printf("pkt_rx(...):\n");
@@ -237,6 +258,14 @@ int pkt_rx(pkt_t *pkt, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, si
 		}
 		printf("\n");
 	}
+	
+	//Free up any previously returned packets
+	for( i=0; i<pkt->rx_pktslen; i++ ) {
+		if( pkt->rx_pkts[i].data ) {
+			free(pkt->rx_pkts[i].data-2);
+		}
+	}
+	pkt->rx_pktslen = 0;
 	
 	rawoff = 0;
 	while( rawoff < rawdatalen ) {
@@ -285,44 +314,47 @@ int pkt_rx(pkt_t *pkt, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, si
 						}
 						pkt->rx_synced = 1;
 						pkt->rx_bitoff = 0;
-						tmp = (uint8_t*)realloc(pkt->rx_pkt,2);
+						tmp = (uint8_t*)realloc(pkt->rx_data,2);
 						if( !tmp ) { return -1; }
-						pkt->rx_pkt = tmp;
-						pkt->rx_pktlen = 2;
-						memset(pkt->rx_pkt,0,2);
+						pkt->rx_data = tmp;
+						pkt->rx_datalen = 2;
+						memset(pkt->rx_data,0,2);
 						memset(pkt->rx_sync,0,pkt->rx_synclen);
 					}
 				}
 				else {
 					//Put the bit in the rx_pkt buffer
-					putbits(pkt->rx_pkt,pkt->rx_pktlen,pkt->rx_bitoff++,1,bit);
+					putbits(pkt->rx_data,pkt->rx_datalen,pkt->rx_bitoff++,1,bit);
 					if( pkt->rx_bitoff == 16 ) {
 						//Read the packet size and realloc the buffer
-						pktlen16 = (pkt->rx_pkt[0]<<8) | (pkt->rx_pkt[1]);
+						pktlen16 = (pkt->rx_data[0]<<8) | (pkt->rx_data[1]);
 						if( pkt->verbose ) {
 							printf("  Packet Length: %u\n",pktlen16);
 						}
-						tmp = (uint8_t*)realloc(pkt->rx_pkt,2+pktlen16);
+						tmp = (uint8_t*)realloc(pkt->rx_data,2+pktlen16);
 						if( !tmp ) { return -1; }
-						pkt->rx_pkt = tmp;
-						pkt->rx_pktlen = 2+pktlen16;
-						memset(pkt->rx_pkt+2,0,pktlen16);
+						pkt->rx_data = tmp;
+						pkt->rx_datalen = 2+pktlen16;
+						memset(pkt->rx_data+2,0,pktlen16);
 					}
-					else if( pkt->rx_bitoff >= pkt->rx_pktlen*8 ) {
+					else if( pkt->rx_bitoff >= pkt->rx_datalen*8 ) {
 						//We've finish reading the complete packet
-						//Set the return variable and forget anything else
-						*rxdata = pkt->rx_pkt+2;
-						*rxdatalen = pkt->rx_pktlen-2;
+						//Append it to the result set
+						pkt->rx_pktslen++;
+						pkt->rx_pkts = realloc(pkt->rx_pkts,sizeof(pktdata_t)*pkt->rx_pktslen);
+						if( !pkt->rx_pkts ) { return -1; }
+						pkt->rx_pkts[pkt->rx_pktslen-1].data = pkt->rx_data+2;
+						pkt->rx_pkts[pkt->rx_pktslen-1].len  = pkt->rx_datalen-2;
+						pkt->rx_data = 0;
+						pkt->rx_datalen = 0;
 						pkt->rx_synced = 0;
-						pkt->rx_buflen = 0;
 						if( pkt->verbose ) {
-							printf("  Pkt: ");
-							for( i=2; i<pkt->rx_pktlen; i++ ) {
-								printf("%02x ",pkt->rx_pkt[i]);
+							printf("  Pkt[%zu]: ",pkt->rx_pkts[pkt->rx_pktslen-1].len);
+							for( i=0; i<pkt->rx_pkts[pkt->rx_pktslen-1].len ; i++ ) {
+								printf("%02x ",pkt->rx_pkts[pkt->rx_pktslen-1].data[i]);
 							}
 							printf("\n");
 						}
-						return 0;
 					}
 				}
 			}
@@ -330,8 +362,10 @@ int pkt_rx(pkt_t *pkt, uint8_t **rxdata, size_t *rxdatalen, uint8_t *rawdata, si
 		}
 	}
 	
-	*rxdata = 0;
-	*rxdatalen = 0;
+	if( pkt->rx_pktslen ) {
+		*rx = pkt->rx_pkts;
+		*rxlen = pkt->rx_pktslen;
+	}
 	return 0;
 }
 
