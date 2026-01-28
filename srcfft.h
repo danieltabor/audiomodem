@@ -39,6 +39,7 @@ typedef struct {
 	size_t        len;
 	double       *mag;
 	double       *norm;
+	double       *ang;
 	size_t        detectlen;
 	size_t       *detect;
 } srcfft_t;
@@ -57,8 +58,9 @@ srcfft_status_t  srcfft_process(srcfft_t *srcfft, double *samples, size_t sample
 #ifdef SRCFFT_IMPLEMENTATION
 #undef SRCFFT_IMPLEMENTATION
 
-#include<stdio.h>
+#include <stdio.h>
 #include <math.h>
+#include <string.h>
 
 srcfft_t *srcfft_init(size_t input_samplerate, size_t input_size, size_t output_bandwidth, size_t output_size) {
 	srcfft_t *srcfft = 0;
@@ -80,13 +82,17 @@ srcfft_t *srcfft_init(size_t input_samplerate, size_t input_size, size_t output_
 	srcfft->srcin  = (float*)malloc(sizeof(float) * srcfft->srcinalloc);
 	if( !srcfft->srcin ) { goto srcfft_init_error; }
 	srcfft->fftalloc = input_size * srcfft->srcratio;
+	if( srcfft->fftalloc == 0 ) { goto srcfft_init_error; }
 	srcfft->srcout = (float*)malloc(sizeof(float) * srcfft->fftalloc);
 	if( !srcfft->srcout ) { goto srcfft_init_error; }
 	
 	//FFT
 	//Because these are real samples, only the first half of the fft results (DC->nyquist) will be valid
 	//The second half (-nyquist->DC) will all be zero
-	if( srcfft->fftalloc < output_size * 2 ) {
+	if( output_size == 0 ) {
+		output_size = srcfft->fftalloc/2;
+	}
+	if( srcfft->fftalloc/2 < output_size ) {
 		//The input_size is not large enough to produce the required output_size
 		goto srcfft_init_error;
 	}
@@ -108,7 +114,8 @@ srcfft_t *srcfft_init(size_t input_samplerate, size_t input_size, size_t output_
 	if( !srcfft->norm ) { goto srcfft_init_error; }
 	srcfft->detect = (size_t*)malloc(sizeof(size_t)* srcfft->magalloc );
 	if( !srcfft->detect ) { goto srcfft_init_error; }
-	
+	srcfft->ang = (double*)malloc(sizeof(double)* srcfft->magalloc );
+	if( !srcfft->ang ) { goto srcfft_init_error; }
 	return srcfft;
 	
 	srcfft_init_error:
@@ -218,6 +225,7 @@ srcfft_status_t srcfft_process(srcfft_t *srcfft, double *samples, size_t samples
 	SRC_DATA src_data;
 	size_t i;
 	double mag;
+	double ang;
 	size_t binidx;
 	
 	if( !srcfft ) { goto srcfft_process_error; }
@@ -298,6 +306,7 @@ srcfft_status_t srcfft_process(srcfft_t *srcfft, double *samples, size_t samples
 	//to first zero out the destination array.
 	for( i=0; i<srcfft->magalloc; i++ ) {
 		srcfft->mag[i] = 0.0;
+		srcfft->ang[i] = 0.0;
 	}
 	
 	//Create FFT magnitudes, 
@@ -308,8 +317,9 @@ srcfft_status_t srcfft_process(srcfft_t *srcfft, double *samples, size_t samples
 	srcfft->maxmag = 0;
 	srcfft->avgmag = 0;
 	for( i=0; i<(srcfft->fftalloc/2); i++ ) {
-		mag = sqrt(srcfft->fftout[i][0] * srcfft->fftout[i][0] + srcfft->fftout[i][1] * srcfft->fftout[i][1]);
 		binidx = (size_t)((double)i * (double)srcfft->magalloc / (double)(srcfft->fftalloc/2));
+		
+		mag = sqrt(srcfft->fftout[i][0] * srcfft->fftout[i][0] + srcfft->fftout[i][1] * srcfft->fftout[i][1]);
 		//printf("%02.1f[%zu] ",mag,binidx);
 		mag = mag + srcfft->mag[binidx];
 		if( isnan(mag) || isinf(mag) ) {
@@ -323,6 +333,19 @@ srcfft_status_t srcfft_process(srcfft_t *srcfft, double *samples, size_t samples
 		}
 		
 		srcfft->avgmag = srcfft->avgmag + mag;
+		
+		ang = atan2(srcfft->fftout[i][1],srcfft->fftout[i][0]);
+		ang = ang + srcfft->ang[binidx];
+		if( isnan(ang) || isinf(ang) ) {
+			goto srcfft_process_error;
+		}
+		while( ang < 0 ) {
+			ang = ang + 2*M_PI;
+		}
+		while( ang >= 2*M_PI ) {
+			ang = ang - (2*M_PI);
+		}
+		srcfft->ang[binidx] = ang;
 	}
 	srcfft->avgmag = srcfft->avgmag / srcfft->magalloc;
 	//printf("\n");

@@ -99,7 +99,7 @@ fskclk_t *fskclk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_
 	modem->sym_freq = ((double)bitrate / (double)modem->bit_per_tone);
 	modem->mod_samp_per_sym = (double)samplerate / modem->sym_freq;
 	if( modem->mod_samp_per_sym < 2 ) { goto fskclk_init_error; }
-	//Make sure that we are measureing the signal fast enough to 
+	//Make sure that we are measuring the signal fast enough to 
 	//catch as least FSKCLK_OVERSAMPLE measurements of both the 
 	//clk and the data
 	modem->demod_samp_per_fft = modem->mod_samp_per_sym/((FSKCLK_OVERSAMPLE)*2);

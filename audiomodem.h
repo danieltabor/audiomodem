@@ -4,6 +4,7 @@
 #include "fskclk.h"
 #include "fsk.h"
 #include "ook.h"
+#include "psk.h"
 #include "pkt.h"
 
 typedef enum {
@@ -11,6 +12,7 @@ typedef enum {
 	COMPAT_FSKCLK,
 	COMPAT_FSK,
 	COMPAT_OOK,
+	COMPAT_PSK,
 } audiomodem_type_t;
 
 typedef struct {
@@ -19,13 +21,15 @@ typedef struct {
 		fskclk_t *fskclk;
 		fsk_t    *fsk;
 		ook_t    *ook;
+		psk_t    *psk;
 	};
 	pkt_t *pkt;
 } audiomodem_t;
 
-audiomodem_t *audiomodem_fskclk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t tone_count);
-audiomodem_t *audiomodem_fsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t tone_count);
-audiomodem_t *audiomodem_ook_init(size_t samplerate, size_t bitrate, double freq);
+audiomodem_t *audiomodem_fskclk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t symbol_count);
+audiomodem_t *audiomodem_fsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t symbol_count);
+audiomodem_t *audiomodem_ook_init(size_t samplerate, size_t bitrate, size_t bandwidth, double freq);
+audiomodem_t *audiomodem_psk_init(size_t samplerate, size_t bitrate, size_t bandwidth, double freq, size_t symbol_count);
 int           audiomodem_pkt_init(audiomodem_t *modem);
 void          audiomodem_destroy(audiomodem_t *modem);
 int           audiomodem_set_thresh(audiomodem_t *modem, double thresh);
@@ -39,7 +43,7 @@ int           audiomodem_demodulate(audiomodem_t *modem, uint8_t **data, size_t 
 #ifdef AUDIOMODEM_IMPLEMENTATION
 #undef AUDIOMODEM_IMPLEMENTATION
 
-audiomodem_t *audiomodem_fskclk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t tone_count) {
+audiomodem_t *audiomodem_fskclk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t symbol_count) {
 	audiomodem_t *modem;
 	
 	modem = malloc(sizeof(audiomodem_t));
@@ -47,32 +51,45 @@ audiomodem_t *audiomodem_fskclk_init(size_t samplerate, size_t bitrate, size_t b
 	memset(modem,0,sizeof(audiomodem_t));
 	
 	modem->type = COMPAT_FSKCLK;
-	modem->fskclk = fskclk_init(samplerate,bitrate,bandwidth,tone_count);
+	modem->fskclk = fskclk_init(samplerate,bitrate,bandwidth,symbol_count);
 	if( !modem->fskclk ) { audiomodem_destroy(modem); return 0; }
 	return modem;
 }
 
-audiomodem_t *audiomodem_fsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t tone_count) {
+audiomodem_t *audiomodem_fsk_init(size_t samplerate, size_t bitrate, size_t bandwidth, size_t symbol_count) {
 	audiomodem_t *modem;
 	
 	modem = malloc(sizeof(audiomodem_t));
 	if( !modem ) { return 0; }
 	
 	modem->type = COMPAT_FSK;
-	modem->fsk = fsk_init(samplerate,bitrate,bandwidth,tone_count);
+	modem->fsk = fsk_init(samplerate,bitrate,bandwidth,symbol_count);
 	if( !modem->fsk ) { audiomodem_destroy(modem); return 0; }
 	modem->pkt = 0;
 	return modem;
 }
 
-audiomodem_t *audiomodem_ook_init(size_t samplerate, size_t bitrate, double freq) {
+audiomodem_t *audiomodem_ook_init(size_t samplerate, size_t bitrate, size_t bandwidth, double freq) {
 	audiomodem_t *modem;
 	
 	modem = malloc(sizeof(audiomodem_t));
 	if( !modem ) { return 0; }
 	
 	modem->type = COMPAT_OOK;
-	modem->ook = ook_init(samplerate,bitrate,freq);
+	modem->ook = ook_init(samplerate,bitrate,bandwidth,freq);
+	if( !modem->ook ) { audiomodem_destroy(modem); return 0; }
+	modem->pkt = 0;
+	return modem;
+}
+
+audiomodem_t *audiomodem_psk_init(size_t samplerate, size_t bitrate, size_t bandwidth, double freq, size_t symbol_count) {
+	audiomodem_t *modem;
+	
+	modem = malloc(sizeof(audiomodem_t));
+	if( !modem ) { return 0; }
+	
+	modem->type = COMPAT_PSK;
+	modem->psk = psk_init(samplerate,bitrate,bandwidth,freq,symbol_count);
 	if( !modem->ook ) { audiomodem_destroy(modem); return 0; }
 	modem->pkt = 0;
 	return modem;
@@ -96,6 +113,9 @@ void audiomodem_destroy(audiomodem_t *modem) {
 		else if( modem->type == COMPAT_OOK ) {
 			ook_destroy(modem->ook);
 		}
+		else if( modem->type == COMPAT_PSK ) {
+			psk_destroy(modem->psk);
+		}
 		if( modem->pkt ) {
 			pkt_destroy(modem->pkt);
 		}
@@ -114,6 +134,9 @@ int audiomodem_set_thresh(audiomodem_t *modem, double thresh) {
 	}
 	else if( modem->type == COMPAT_OOK ) {
 		return ook_set_thresh(modem->ook,thresh);
+	}
+	else if( modem->type == COMPAT_PSK ) {
+		return psk_set_thresh(modem->psk,thresh);
 	}
 	else {
 		return -1;
@@ -134,6 +157,11 @@ int audiomodem_set_verbose(audiomodem_t *modem, int verbose) {
 	}
 	else if( modem->type == COMPAT_OOK ) {
 		if( ook_set_verbose(modem->ook,verbose) ) { 
+			return -1;
+		}
+	}
+	else if( modem->type == COMPAT_PSK ) {
+		if( psk_set_verbose(modem->psk,verbose) ) { 
 			return -1;
 		}
 	}
@@ -158,6 +186,9 @@ void audiomodem_printinfo(audiomodem_t *modem) {
 		}
 		else if( modem->type == COMPAT_OOK ) {
 			ook_printinfo(modem->ook);
+		}
+		else if( modem->type == COMPAT_PSK ) {
+			psk_printinfo(modem->psk);
 		}
 	}
 }
@@ -186,6 +217,9 @@ int audiomodem_modulate(audiomodem_t *modem, double **samples, size_t *samplesle
 	else if( modem->type == COMPAT_OOK ) {
 		return ook_modulate(modem->ook,samples,sampleslen,mod_data,mod_datalen);
 	}
+	else if( modem->type == COMPAT_PSK ) {
+		return psk_modulate(modem->psk,samples,sampleslen,mod_data,mod_datalen);
+	}
 	else {
 		return -1;
 	}
@@ -209,6 +243,11 @@ int audiomodem_demodulate(audiomodem_t *modem, uint8_t **data, size_t *datalen, 
 	}
 	else if( modem->type == COMPAT_OOK ) {
 		if( ook_demodulate(modem->ook,&demod_data,&demod_datalen,samples,sampleslen) ) {
+			return -1;
+		}
+	}
+	else if( modem->type == COMPAT_PSK ) {
+		if( psk_demodulate(modem->psk,&demod_data,&demod_datalen,samples,sampleslen) ) {
 			return -1;
 		}
 	}

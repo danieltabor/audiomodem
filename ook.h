@@ -42,7 +42,7 @@ typedef struct {
 } ook_t;
 
 
-ook_t *ook_init(size_t samplerate, size_t bitrate, double frequency);
+ook_t *ook_init(size_t samplerate, size_t bitrate, size_t bandwidth, double frequency);
 void   ook_destroy(ook_t *modem);
 int    ook_set_thresh(ook_t *modem, double thresh);
 int    ook_set_verbose(ook_t *modem, int verbose);
@@ -58,11 +58,12 @@ int    ook_demodulate(ook_t *modem, uint8_t **data, size_t *datalen, double *sam
 
 #define OOK_OVERSAMPLE 5
 
-ook_t *ook_init(size_t samplerate, size_t bitrate, double frequency) {
+ook_t *ook_init(size_t samplerate, size_t bitrate, size_t bandwidth, double frequency) {
 	ook_t *modem;
 	
 	//Double check arguments
 	if( samplerate <= (frequency * 2) ) { return 0; }
+	if( bandwidth < samplerate / 2 ) { return 0; }
 	
 	modem = (ook_t*)malloc(sizeof(ook_t));
 	if( !modem ) { goto ook_init_error; }
@@ -80,7 +81,7 @@ ook_t *ook_init(size_t samplerate, size_t bitrate, double frequency) {
 	modem->demod_samp_per_fft = ((double)samplerate / (double)bitrate )/ (double)OOK_OVERSAMPLE;
 	
 	//Create the Samplerate converting FFT object
-	modem->srcfft = srcfft_init(samplerate,modem->demod_samp_per_fft,samplerate/2,1);
+	modem->srcfft = srcfft_init(samplerate,modem->demod_samp_per_fft,bandwidth,1);
 	if( !modem->srcfft ) { goto ook_init_error; }
 	if( ook_set_thresh(modem,OOK_DEFAULT_THRESH) ) {
 		goto ook_init_error;
@@ -220,7 +221,7 @@ int ook_modulate(ook_t *modem, double **samples, size_t *sampleslen, uint8_t *da
 		}
 	}
 	
-	//To sync receive star
+	//To sync receive
 	//  1 symbol of tone (idle)
 	//All bytes will have
 	//  1 symbol of none (start bit)
