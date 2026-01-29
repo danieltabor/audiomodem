@@ -68,11 +68,11 @@ audiomodem_t *audiomodem_fsk_init(size_t samplerate, size_t bitrate, size_t band
 	
 	modem = malloc(sizeof(audiomodem_t));
 	if( !modem ) { return 0; }
+	memset(modem,0,sizeof(audiomodem_t));
 	
 	modem->type = COMPAT_FSK;
 	modem->fsk = fsk_init(samplerate,bitrate,bandwidth,symbol_count);
 	if( !modem->fsk ) { audiomodem_destroy(modem); return 0; }
-	modem->pkt = 0;
 	return modem;
 }
 
@@ -81,11 +81,11 @@ audiomodem_t *audiomodem_ook_init(size_t samplerate, size_t bitrate, size_t band
 	
 	modem = malloc(sizeof(audiomodem_t));
 	if( !modem ) { return 0; }
+	memset(modem,0,sizeof(audiomodem_t));
 	
 	modem->type = COMPAT_OOK;
 	modem->ook = ook_init(samplerate,bitrate,bandwidth,freq);
 	if( !modem->ook ) { audiomodem_destroy(modem); return 0; }
-	modem->pkt = 0;
 	return modem;
 }
 
@@ -94,11 +94,11 @@ audiomodem_t *audiomodem_psk_init(size_t samplerate, size_t bitrate, size_t band
 	
 	modem = malloc(sizeof(audiomodem_t));
 	if( !modem ) { return 0; }
+	memset(modem,0,sizeof(audiomodem_t));
 	
 	modem->type = COMPAT_PSK;
 	modem->psk = psk_init(samplerate,bitrate,bandwidth,freq,symbol_count);
 	if( !modem->ook ) { audiomodem_destroy(modem); return 0; }
-	modem->pkt = 0;
 	return modem;
 }
 
@@ -107,11 +107,11 @@ audiomodem_t *audiomodem_corrfsk_init(size_t samplerate, size_t bitrate, size_t 
 	
 	modem = malloc(sizeof(audiomodem_t));
 	if( !modem ) { return 0; }
+	memset(modem,0,sizeof(audiomodem_t));
 	
 	modem->type = COMPAT_CORR;
 	modem->corr = corr_fsk_init(samplerate,bitrate,bandwidth,symbol_count);
 	if( !modem->corr ) { audiomodem_destroy(modem); return 0; }
-	modem->pkt = 0;
 	return modem;
 }
 
@@ -120,11 +120,11 @@ audiomodem_t *audiomodem_corrpsk_init(size_t samplerate, size_t bitrate, double 
 	
 	modem = malloc(sizeof(audiomodem_t));
 	if( !modem ) { return 0; }
+	memset(modem,0,sizeof(audiomodem_t));
 	
 	modem->type = COMPAT_CORR;
 	modem->corr = corr_psk_init(samplerate,bitrate,freq,symbol_count);
 	if( !modem->corr ) { audiomodem_destroy(modem); return 0; }
-	modem->pkt = 0;
 	return modem;
 }
 
@@ -133,11 +133,11 @@ audiomodem_t *audiomodem_corrfpsk_init(size_t samplerate, size_t bitrate, size_t
 	
 	modem = malloc(sizeof(audiomodem_t));
 	if( !modem ) { return 0; }
+	memset(modem,0,sizeof(audiomodem_t));
 	
 	modem->type = COMPAT_CORR;
 	modem->corr = corr_fpsk_init(samplerate,bitrate,bandwidth,symbol_count);
 	if( !modem->corr ) { audiomodem_destroy(modem); return 0; }
-	modem->pkt = 0;
 	return modem;
 }
 

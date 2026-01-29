@@ -63,7 +63,7 @@ ook_t *ook_init(size_t samplerate, size_t bitrate, size_t bandwidth, double freq
 	
 	//Double check arguments
 	if( samplerate <= (frequency * 2) ) { return 0; }
-	if( bandwidth < samplerate / 2 ) { return 0; }
+	if( samplerate < bandwidth * 2 ) { return 0; }
 	
 	modem = (ook_t*)malloc(sizeof(ook_t));
 	if( !modem ) { goto ook_init_error; }

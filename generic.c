@@ -1,0 +1,217 @@
+#include <stdio.h>
+#include <sndfile.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#define BITOPS_IMPLEMENTATION
+#define CORR_IMPLEMENTATION
+#define PKT_IMPLEMENTATION
+#include "corr.h"
+#include "pkt.h"
+
+void usage(char* cmd) {
+	char* filename = cmd+strlen(cmd);
+	while( filename > cmd ) {
+		if( *(filename-1) == '/' ) {
+			break;
+		}
+		filename--;
+	}
+	printf("Usage: %s [-h] [-v] [-s symbol.wav]\n",filename);
+	printf("  [-mod | -demod] -i inpath -o outpath\n");
+	printf("\n");
+	exit(0);
+}
+
+int main(int argc, char** argv) {
+	SNDFILE* sndfile;
+	SF_INFO sfinfo;
+	corr_sym_t *syms = 0;
+	size_t      symslen = 0;
+	size_t i;
+	int verbose = 0;
+	int use_pkt = 0;
+	int do_demod = -1;
+	char* inpath = 0;
+	char* outpath = 0;
+	corr_t *corr;
+	pkt_t  *pkt;
+	int fd;
+	uint8_t *data;
+	size_t   datalen;
+	pktdata_t *pkts;
+	size_t     pktslen;
+	
+	i=1;
+	while( i<argc ) {
+		if( !strcmp(argv[i],"-h") ) {
+			usage(argv[0]);
+		}
+		else if( !strcmp(argv[i],"-v") ) {
+			if( verbose ) {
+				usage(argv[0]);
+			}
+			verbose = 1;
+		}
+		else if( !strcmp(argv[i],"-p") ) {
+			if( use_pkt ) {
+				usage(argv[0]);
+			}
+			use_pkt = 1;
+		}
+		else if( !strcmp(argv[i],"-s") ) {
+			if( ++i >= argc ) {
+				usage(argv[0]);
+			}
+			memset(&sfinfo,0,sizeof(SF_INFO));
+			sndfile = sf_open(argv[i],SFM_READ,&sfinfo);
+			if( !sndfile ) { printf("Failed to open %s\n",argv[i]); return -1;}
+			symslen++;
+			syms = realloc(syms,sizeof(corr_sym_t)*symslen);
+			if( !syms ) { printf("Malloc error\n"); return -1; }
+			syms[symslen-1].len = sfinfo.frames;
+			syms[symslen-1].samples = malloc(sizeof(double)*sfinfo.frames);
+			if( !syms[symslen-1].samples ) { printf("Malloc error\n"); return -1; }
+			if( sf_readf_double(sndfile,syms[symslen-1].samples,sfinfo.frames) != sfinfo.frames ) {
+				printf("Read error\n"); return -1;
+			}
+			sf_close(sndfile);
+		}
+		else if( !strcmp(argv[i],"-mod") ) {
+			if( do_demod != -1 ) {
+				usage(argv[0]);
+			}
+			do_demod = 0;
+		}
+		else if( !strcmp(argv[i],"-demod") ) {
+			if( do_demod != -1 ) {
+				usage(argv[0]);
+			}
+			do_demod = 1;
+		}
+		else if( !strcmp(argv[i],"-i") ) {
+			if( ++i >= argc || inpath != 0 ) {
+				usage(argv[0]);
+			}
+			inpath = argv[i];
+		}
+		else if( !strcmp(argv[i],"-o") ) {
+			if( ++i >= argc || outpath != 0 ) {
+				usage(argv[0]);
+			}
+			outpath = argv[i];
+		}
+		else {
+			usage(argv[0]);
+		}
+		++i;
+	}
+	
+	if( do_demod == -1 ) {
+		usage(argv[0]);
+	}
+	if( inpath == 0 ) {
+		usage(argv[0]);
+	}
+	if( outpath == 0 ) {
+		usage(argv[0]);
+	}
+	if( symslen == 0 ) {
+		usage(argv[0]);
+	}
+	
+	pkt = pkt_init();
+	if( !pkt ) { printf("Failed to create packet handler\n"); return -1; }
+	corr = corr_init(syms,symslen);
+	if( !corr ) { printf("Failed ot create modem\n"); return -1; }
+	
+	if( do_demod ) {
+		double  samples[0xffff];
+		size_t  sampleslen;
+		int done = 0;
+		memset(&sfinfo,0,sizeof(SF_INFO));
+		sndfile = sf_open(inpath,SFM_READ,&sfinfo);
+		if( !sndfile ) { printf("Failed to open: %s\n",inpath); return -1; }
+		fd = open(outpath,O_WRONLY|O_TRUNC|O_CREAT,0666);
+		if( fd < 0 ) { printf("Failed to open: %s\n",outpath); return -1; }
+		while( !done ) {
+			sampleslen = sf_readf_double(sndfile,samples,sizeof(samples)/sizeof(double));
+			if( sampleslen < 0 ) {
+				printf("Read Error\n");
+				return -1;
+			}
+			if( !sampleslen ) {
+				done = 1;
+				//Generate an extra second to flush out the demodulator
+				for( i=0; i<sfinfo.samplerate; i++ ) {
+					samples[i] = 0.0;
+				}
+				sampleslen = sfinfo.samplerate;
+			}
+			if( corr_demodulate(corr, &data, &datalen, samples, sampleslen) ) {
+				printf("Demodulation failed\n");
+				return -1;
+			}
+			if( pkt_rx(pkt,&pkts,&pktslen,data,datalen) ) {
+				printf("Packet Rx failed\n");
+				return -1;
+			}
+			for( i=0; i<pktslen; i++ ) {
+				if( write(fd,pkts[i].data,pkts[i].len) != pkts[i].len ) {
+					printf("File Write error\n"); 
+					return -1;
+				}
+			}
+		}
+		close(fd);
+		sf_close(sndfile);
+	}
+	else {
+		uint8_t  buffer[0xffff];
+		size_t   bufferlen;
+		double  *samples;
+		size_t   sampleslen;
+		memset(&sfinfo,0,sizeof(SF_INFO));
+		sfinfo.samplerate = 8000;
+		sfinfo.channels=1;
+		sfinfo.format=SF_FORMAT_WAV|SF_FORMAT_PCM_16;
+		sfinfo.sections=1;
+		sfinfo.seekable=1;
+		sndfile = sf_open(outpath,SFM_WRITE,&sfinfo);
+		if( !sndfile ) {
+			printf("Failed to open %s\n",outpath);
+			return -1;
+		}
+		fd = open(inpath,O_RDONLY);
+		if( fd < 0 ) {
+			printf("Failed to open: %s\n",outpath);
+			return -1;
+		}
+		for(;;) {
+			bufferlen = read(fd,buffer,sizeof(buffer));
+			if( bufferlen < 0 ) {
+				printf("Read Error\n");
+				return -1;
+			}
+			if( !bufferlen ) { break; }
+			if( pkt_tx(pkt, &data, &datalen, buffer, bufferlen) ) {
+				printf("Packet Tx failed\n");
+				return -1;
+			}
+			if( corr_modulate(corr,&samples,&sampleslen,data,datalen) ) {
+				printf("Modulation failed\n");
+				return -1;
+			}
+			if( sf_writef_double(sndfile,samples,sampleslen) != sampleslen ) {
+				printf("Write error\n");
+				return -1;
+			}
+		}
+		close(fd);
+		sf_close(sndfile);
+	}
+	corr_destroy(corr);
+	pkt_destroy(pkt);
+	return 0;
+}

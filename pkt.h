@@ -102,7 +102,7 @@ void pkt_destroy(pkt_t *pkt) {
 		if( pkt->rx_pkts ) {
 			for( i=0; i<pkt->rx_pktslen; i++ ) {
 				if( pkt->rx_pkts[i].data ) { 
-					free(pkt->rx_pkts[i].data);
+					free(pkt->rx_pkts[i].data-2);
 				}
 			}
 		}
