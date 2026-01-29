@@ -114,6 +114,24 @@ Demodulate the audio in samples/sampleslen to an array of bytes in data/datalen.
     symbol_count: 4
     frequency: 100
   ```
+
+- ratetest
+
+  Try to find the maximum datarate of a modem, with or without using the `pkt` library, `-p`, and with optional added noise.
+  ```
+  Usage: ratetest [-h] [-v] [-p] [-fsk | -fskclk | -ook | -pskclk | -cfsk | -cpsk | -cfpsk]
+    [-s samplerate] [-r bitrate] [-bw bandwidth] [-c symbol_count] [-f frequency]
+    [-z test_size] [-n noise_amplitude]
+  
+  Defaults:
+    samplerate     : based on bandwidth
+    start_bitrate  : 64
+    bandwidth      : 3000
+    symbol_count     : 4
+    frequency      : 1000
+    test_size      : 512
+    noise_amplitude: 0.0
+  ```
   
 - generic
 
