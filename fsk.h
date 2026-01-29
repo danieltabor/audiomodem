@@ -151,7 +151,7 @@ int fsk_set_verbose(fsk_t *modem, int verbose) {
 void fsk_printinfo(fsk_t *modem) {
 	size_t i;
 	size_t j;
-	printf("Tone Modem:\n");
+	printf("FSK Modem:\n");
 	printf("  Verbose               :  %d\n",modem->verbose);
 	printf("  Samplerate            : %zu\n",modem->samplerate);
 	printf("  Bitrate               : %zu bps\n",modem->bitrate);

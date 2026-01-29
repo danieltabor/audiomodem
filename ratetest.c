@@ -15,7 +15,7 @@
 #define FSKCLK_IMPLEMENTATION
 #define FSK_IMPLEMENTATION
 #define OOK_IMPLEMENTATION
-#define PSK_IMPLEMENTATION
+#define PSKCLK_IMPLEMENTATION
 #define CORR_IMPLEMENTATION
 #define PKT_IMPLEMENTATION
 #define AUDIOMODEM_IMPLEMENTATION
@@ -28,7 +28,7 @@
 #define DEFAULT_TEST_SIZE 512
 #define DEFAULT_NOISE_AMPLITUDE 0
 
-typedef enum {OPT_NONE,OPT_FSK,OPT_FSKCLK,OPT_OOK,OPT_PSK,OPT_CORRFSK,OPT_CORRPSK,OPT_CORRFPSK} modemopt_t;
+typedef enum {OPT_NONE,OPT_FSK,OPT_FSKCLK,OPT_OOK,OPT_PSKCLK,OPT_CORRFSK,OPT_CORRPSK,OPT_CORRFPSKCLK} modemopt_t;
 
 void usage(char* cmd) {
 	char* filename = cmd+strlen(cmd);
@@ -38,7 +38,7 @@ void usage(char* cmd) {
 		}
 		filename--;
 	}
-	printf("Usage: %s [-h] [-v] [-p] [-fsk | -fskclk | -ook | -psk | -cfsk | -cpsk | -cfpsk]\n",filename);
+	printf("Usage: %s [-h] [-v] [-p] [-fsk | -fskclk | -ook | -pskclk | -cfsk | -cpsk | -cfpsk]\n",filename);
 	printf("  [-s samplerate] [-r bitrate] [-bw bandwidth] [-c symbol_count] [-f frequency]\n");
 	printf("  [-z test_size] [-n noise_amplitude]\n");
 	printf("\n");
@@ -111,11 +111,11 @@ int main(int argc, char** argv) {
 			}
 			modemopt = OPT_OOK;
 		}
-		else if( !strcmp(argv[i],"-psk") ) {
+		else if( !strcmp(argv[i],"-pskclk") ) {
 			if( modemopt != OPT_NONE ) {
 				usage(argv[0]);
 			}
-			modemopt = OPT_PSK;
+			modemopt = OPT_PSKCLK;
 		}
 		else if( !strcmp(argv[i],"-cfsk") ) {
 			if( modemopt != OPT_NONE ) {
@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
 			if( modemopt != OPT_NONE ) {
 				usage(argv[0]);
 			}
-			modemopt = OPT_CORRFPSK;
+			modemopt = OPT_CORRFPSKCLK;
 		}
 		else if( !strcmp(argv[i],"-s") ) {
 			++i;
@@ -288,8 +288,8 @@ int main(int argc, char** argv) {
 		else if( modemopt == OPT_OOK ) {
 			modem = audiomodem_ook_init(samplerate,bitrate,bandwidth,frequency);
 		}
-		else if( modemopt == OPT_PSK ) {
-			modem = audiomodem_psk_init(samplerate,bitrate,bandwidth,frequency,symbol_count);
+		else if( modemopt == OPT_PSKCLK ) {
+			modem = audiomodem_pskclk_init(samplerate,bitrate,bandwidth,frequency,symbol_count);
 		}
 		else if( modemopt == OPT_CORRFSK ) {
 			modem = audiomodem_corrfsk_init(samplerate, bitrate, bandwidth, symbol_count);
@@ -297,7 +297,7 @@ int main(int argc, char** argv) {
 		else if( modemopt == OPT_CORRPSK ) {
 			modem = audiomodem_corrpsk_init(samplerate,bitrate,frequency,symbol_count);
 		}
-		else if( modemopt == OPT_CORRFPSK ) {
+		else if( modemopt == OPT_CORRFPSKCLK ) {
 			modem = audiomodem_corrfpsk_init(samplerate, bitrate, bandwidth, symbol_count);
 		}
 		if( !modem ) {

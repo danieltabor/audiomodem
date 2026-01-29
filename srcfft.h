@@ -142,12 +142,15 @@ int srcfft_reset(srcfft_t *srcfft) {
 	size_t i;
 	if( !srcfft ) { return -1; }
 	if( src_reset(srcfft->src) ) { return -1; }
+	srcfft->srcinlen = 0;
+	srcfft->srcoutlen = 0;
 	srcfft->used_samples = 0;
 	srcfft->maxbin = 0;
 	srcfft->maxmag = 0.0;
 	srcfft->minbin = 0;
 	srcfft->minmag = 0.0;
 	for( i=0; i<srcfft->magalloc; i++ ) {
+		srcfft->srcout[i] = 0.0;
 		srcfft->mag[i] = 0.0;
 		srcfft->norm[i] = 0.0;
 		srcfft->detect[i] = 0.0;

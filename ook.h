@@ -188,7 +188,7 @@ int ook_set_verbose(ook_t *modem, int verbose) {
 void ook_printinfo(ook_t *modem) {
 	size_t i;
 	size_t j;
-	printf("Tone Modem:\n");
+	printf("OOK Modem:\n");
 	printf("  Verbose            :  %d\n",modem->verbose);
 	printf("  Samplerate         : %zu\n",modem->samplerate);
 	printf("  Bitrate            : %zu bps\n",modem->bitrate);

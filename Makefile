@@ -4,7 +4,7 @@ ALL_HEADERS = \
 	srcfft.h fskclk.h \
 	fsk.h \
 	ook.h \
-	psk.h \
+	pskclk.h \
 	corr.h \
 	pkt.h \
 	audiomodem.h

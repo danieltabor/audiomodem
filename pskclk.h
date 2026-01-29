@@ -1,5 +1,5 @@
-#ifndef __PSK_H__
-#define __PSK_H__
+#ifndef __PSKCLK_H__
+#define __PSKCLK_H__
 
 #include <math.h>
 #include <stdarg.h>
@@ -9,17 +9,17 @@
 #include "bitops.h"
 #include "srcfft.h"
 
-#define PSK_DEFAULT_VERBOSE     0
-#define PSK_DEFAULT_THRESH      0.75
+#define PSKCLK_DEFAULT_VERBOSE     0
+#define PSKCLK_DEFAULT_THRESH      0.75
 
 typedef enum{
-	PSK_DEMOD_BASE_SEARCH,
-	PSK_DEMOD_BASE_ACQUIRE,
-	PSK_DEMOD_BASE_DETECTED,
-	PSK_DEMOD_DATA_SEARCH,
-	PSK_DEMOD_DATA_ACQUIRE,
-	PSK_DEMOD_DATA_DETECTED,
-} psk_demod_state_t;
+	PSKCLK_DEMOD_BASE_SEARCH,
+	PSKCLK_DEMOD_BASE_ACQUIRE,
+	PSKCLK_DEMOD_BASE_DETECTED,
+	PSKCLK_DEMOD_DATA_SEARCH,
+	PSKCLK_DEMOD_DATA_ACQUIRE,
+	PSKCLK_DEMOD_DATA_DETECTED,
+} pskclk_demod_state_t;
 
 typedef struct {
 	int      verbose;
@@ -33,12 +33,12 @@ typedef struct {
 	double   sym_freq;
 	size_t   mod_samp_per_sym;
 	size_t   demod_samp_per_fft;
-	size_t   demod_fft_per_sym;
+	size_t   demod_fft_per_halfsym;
 	double  *mod_samples;
 	size_t   mod_sampleslen;
 	
 	srcfft_t *srcfft;
-	psk_demod_state_t demod_state;
+	pskclk_demod_state_t demod_state;
 	size_t     demod_sync_loss;
 	
 	size_t     demod_capture_alloc;
@@ -53,25 +53,26 @@ typedef struct {
 	uint8_t    demod_bit_count;
 	uint8_t   *demod_data;
 	size_t     demod_datalen;
-} psk_t;
+} pskclk_t;
 
 
-psk_t *psk_init(size_t samplerate, size_t bitrate, size_t bandwidth, double frequency, size_t symbol_count);
-void   psk_destroy(psk_t *modem);
-int    psk_set_thresh(psk_t *modem, double thresh);
-int    psk_set_verbose(psk_t *modem, int verbose);
-void   psk_printinfo(psk_t *modem);
-int    psk_modulate(psk_t *modem, double **samples, size_t *sampleslen, uint8_t *data, size_t datalen);
-int    psk_demodulate(psk_t *modem, uint8_t **data, size_t *datalen, double *samples, size_t sampleslen);
+pskclk_t *pskclk_init(size_t samplerate, size_t bitrate, size_t bandwidth, double frequency, size_t symbol_count);
+void   pskclk_destroy(pskclk_t *modem);
+int    pskclk_set_thresh(pskclk_t *modem, double thresh);
+int    pskclk_set_verbose(pskclk_t *modem, int verbose);
+void   pskclk_printinfo(pskclk_t *modem);
+int    pskclk_modulate(pskclk_t *modem, double **samples, size_t *sampleslen, uint8_t *data, size_t datalen);
+int    pskclk_demodulate(pskclk_t *modem, uint8_t **data, size_t *datalen, double *samples, size_t sampleslen);
 
-#endif //__PSK_H__
+#endif //__PSKCLK_H__
 
+#ifdef PSKCLK_IMPLEMENTATION
+#undef PSKCLK_IMPLEMENTATION
 
-#ifdef PSK_IMPLEMENTATION
-#undef PSK_IMPLEMENTATION
+#define PSKCLK_OVERSAMPLE 5
 
-psk_t *psk_init(size_t samplerate, size_t bitrate, size_t bandwidth, double frequency, size_t symbol_count) {
-	psk_t *modem;
+pskclk_t *pskclk_init(size_t samplerate, size_t bitrate, size_t bandwidth, double frequency, size_t symbol_count) {
+	pskclk_t *modem;
 	size_t i;
 	
 	//Double check arguments
@@ -79,11 +80,11 @@ psk_t *psk_init(size_t samplerate, size_t bitrate, size_t bandwidth, double freq
 	if( frequency * 2 > bandwidth ) { return 0; }
 	if( symbol_count < 2 ) { return 0; }
 	
-	modem = (psk_t*)malloc(sizeof(psk_t));
-	if( !modem ) { goto psk_init_error; }
-	memset(modem,0,sizeof(psk_t));
+	modem = (pskclk_t*)malloc(sizeof(pskclk_t));
+	if( !modem ) { goto pskclk_init_error; }
+	memset(modem,0,sizeof(pskclk_t));
 	
-	modem->verbose = PSK_DEFAULT_VERBOSE;
+	modem->verbose = PSKCLK_DEFAULT_VERBOSE;
 	
 	modem->samplerate = samplerate;
 	modem->bitrate = bitrate;
@@ -96,59 +97,63 @@ psk_t *psk_init(size_t samplerate, size_t bitrate, size_t bandwidth, double freq
 	}
 	modem->symbol_count = (1 << modem->bit_per_symbol);
 	
-	//Samples to produce per clock cycle on modulation
-	modem->sym_freq = ((double)bitrate / (double)modem->bit_per_symbol)/2;
+	//Samples to produce per symbol (clock/base and data)
+	modem->sym_freq = ((double)bitrate / (double)modem->bit_per_symbol);
 	modem->mod_samp_per_sym = (double)samplerate / modem->sym_freq;
-	if( modem->mod_samp_per_sym < 2 ) { goto psk_init_error; }
-	//Measure the signal every wave length
-	modem->demod_samp_per_fft = samplerate / frequency;
-	modem->demod_fft_per_sym = modem->mod_samp_per_sym / modem->demod_samp_per_fft;
-	if( modem->demod_fft_per_sym < 1 ) { goto psk_init_error; }
+	if( modem->mod_samp_per_sym < 4 ) { goto pskclk_init_error; }
+	
+	//Measure the signal by even wavelengths
+	modem->demod_samp_per_fft = 0;
+	do {
+		modem->demod_samp_per_fft += samplerate / frequency;
+		modem->demod_fft_per_halfsym = (modem->mod_samp_per_sym/2) / modem->demod_samp_per_fft;
+	} while( modem->demod_fft_per_halfsym > PSKCLK_OVERSAMPLE );
+	if( modem->demod_fft_per_halfsym < 1 ) { goto pskclk_init_error; }
 	
 	//Create the Samplerate converting FFT object
 	modem->srcfft = srcfft_init(samplerate,modem->demod_samp_per_fft,bandwidth,0);
-	if( !modem->srcfft ) { goto psk_init_error; }
+	if( !modem->srcfft ) { goto pskclk_init_error; }
 	
 	modem->demod_fftbin = modem->frequency * ((double)modem->srcfft->magalloc/(double)modem->bandwidth);
-	if( psk_set_thresh(modem,PSK_DEFAULT_THRESH ) ) {
-		goto psk_init_error;
+	if( pskclk_set_thresh(modem,PSKCLK_DEFAULT_THRESH ) ) {
+		goto pskclk_init_error;
 	}
 	
-	modem->demod_state = PSK_DEMOD_BASE_SEARCH;
+	modem->demod_state = PSKCLK_DEMOD_BASE_SEARCH;
 	
 	return modem;
 	
-	psk_init_error:
-	psk_destroy(modem);
+	pskclk_init_error:
+	pskclk_destroy(modem);
 	return 0;
 }
 
-void psk_destroy(psk_t *modem) {
+void pskclk_destroy(pskclk_t *modem) {
 	if( modem ) {
 		if( modem->srcfft ) { srcfft_destroy(modem->srcfft); }
 		if( modem->mod_samples ) { free(modem->mod_samples); }
 		if( modem->demod_data ) { free(modem->demod_data); }
-		memset(modem,0,sizeof(psk_t));
+		memset(modem,0,sizeof(pskclk_t));
 		free(modem);
 	}
 }
 
 
-int psk_set_thresh(psk_t *modem, double thresh) {
+int pskclk_set_thresh(pskclk_t *modem, double thresh) {
 	double *samples = 0;
 	size_t  sampleslen;
 	size_t  ii;
 	size_t  j;
 	srcfft_status_t result;
 	
-	if( !modem ) { goto psk_set_thresh_error; }
+	if( !modem ) { goto pskclk_set_thresh_error; }
 	
 	sampleslen = modem->demod_samp_per_fft;
 	samples = (double*)malloc(sizeof(double)*sampleslen);
-	if( !samples ) { goto psk_set_thresh_error; }
+	if( !samples ) { goto pskclk_set_thresh_error; }
 	
 	if( srcfft_reset(modem->srcfft) ) {
-		goto psk_set_thresh_error;
+		goto pskclk_set_thresh_error;
 	}
 	
 	ii = 0;
@@ -160,38 +165,45 @@ int psk_set_thresh(psk_t *modem, double thresh) {
 		result = srcfft_process(modem->srcfft,samples,sampleslen);
 	} while( result == SRCFFT_NEED_MORE );
 	if( result == SRCFFT_ERROR ) {
-		goto psk_set_thresh_error;
+		goto pskclk_set_thresh_error;
 	}
 	
-	srcfft_set_thresh(modem->srcfft, modem->srcfft->mag[modem->demod_fftbin] * thresh);
+	if( srcfft_set_thresh(modem->srcfft, modem->srcfft->mag[modem->demod_fftbin] * thresh) ) {
+		goto pskclk_set_thresh_error;
+	}
+	if( srcfft_reset(modem->srcfft) ) {
+		goto pskclk_set_thresh_error;
+	}
+	
 	free(samples);
 	return 0;
 	
-	psk_set_thresh_error:
+	pskclk_set_thresh_error:
 	if( samples ) { free(samples); }
 	return -1;
 }
 
-int psk_set_verbose(psk_t *modem, int verbose) {
+int pskclk_set_verbose(pskclk_t *modem, int verbose) {
 	if( !modem ) { return -1; }
 	modem->verbose = verbose;
 	return 0;
 }
 
-void psk_printinfo(psk_t *modem) {
+void pskclk_printinfo(pskclk_t *modem) {
 	size_t i;
 	size_t j;
-	printf("Tone Modem:\n");
-	printf("  Verbose               : %d\n",modem->verbose);
-	printf("  Samplerate            : %zu\n",modem->samplerate);
-	printf("  Bitrate               : %zu bps\n",modem->bitrate);
-	printf("  Bandwidth             : %zu Hz\n",modem->bandwidth);
-	printf("  Samples per Symbol    : %zu\n",modem->mod_samp_per_sym);
-	printf("  Demod Samples per FFT : %zu\n",modem->demod_samp_per_fft);
-	printf("  Frequnecy             : %lf\n",modem->frequency);
+	printf("PSK (with Clock) Modem:\n");
+	printf("  Verbose                  : %d\n",modem->verbose);
+	printf("  Samplerate               : %zu\n",modem->samplerate);
+	printf("  Bitrate                  : %zu bps\n",modem->bitrate);
+	printf("  Bandwidth                : %zu Hz\n",modem->bandwidth);
+	printf("  Samples per Symbol       : %zu\n",modem->mod_samp_per_sym);
+	printf("  Demod Samples per FFT    : %zu\n",modem->demod_samp_per_fft);
+	printf("  Demod FFT per HalfSymbol : %zu\n",modem->demod_fft_per_halfsym);
+	printf("  Frequency                : %lf\n",modem->frequency);
 }
 
-int psk_modulate(psk_t *modem, double **samples, size_t *sampleslen, uint8_t *data, size_t datalen) {
+int pskclk_modulate(pskclk_t *modem, double **samples, size_t *sampleslen, uint8_t *data, size_t datalen) {
 	size_t symbol_idx;
 	size_t symbol_count;
 	size_t sample_count;
@@ -223,7 +235,7 @@ int psk_modulate(psk_t *modem, double **samples, size_t *sampleslen, uint8_t *da
 		printf("  Symbol count: %zu\n",symbol_count);
 	}
 	
-	mod_sampleslen = modem->mod_samp_per_sym*2*symbol_count;
+	mod_sampleslen = modem->mod_samp_per_sym*symbol_count;
 	mod_samples = (double*)realloc(modem->mod_samples,sizeof(double)*mod_sampleslen);
 	if( !mod_samples ) {
 		goto ook_modulate_error;
@@ -233,9 +245,8 @@ int psk_modulate(psk_t *modem, double **samples, size_t *sampleslen, uint8_t *da
 	
 	ii = 0;
 	bit_idx = 0;
-	//Generate one symbol of mark
 	for( symbol_idx=0; symbol_idx<symbol_count; symbol_idx++ ) {
-		for( sample_count=0; sample_count<modem->mod_samp_per_sym; sample_count++ ) {
+		for( sample_count=0; sample_count<modem->mod_samp_per_sym/2; sample_count++ ) {
 			//Generate base tone (phase 0)
 			mod_samples[ii] = sin(2*M_PI*modem->frequency*ii/modem->samplerate) *
 							  sin(2*M_PI*modem->sym_freq*sample_count/modem->samplerate);
@@ -245,8 +256,8 @@ int psk_modulate(psk_t *modem, double **samples, size_t *sampleslen, uint8_t *da
 		bit_idx = bit_idx + modem->bit_per_symbol;
 		
 		ang = (2*M_PI) / (double)modem->symbol_count * sym;
-		for( sample_count=0; sample_count<modem->mod_samp_per_sym; sample_count++ ) {
-			//Generate base tone (phase 0)
+		for( sample_count=0; sample_count<modem->mod_samp_per_sym/2; sample_count++ ) {
+			//Generate base tone (phase X)
 			mod_samples[ii] = sin(2*M_PI*modem->frequency*ii/modem->samplerate + ang) *
 							  sin(2*M_PI*modem->sym_freq*sample_count/modem->samplerate);
 			ii++;
@@ -264,7 +275,7 @@ int psk_modulate(psk_t *modem, double **samples, size_t *sampleslen, uint8_t *da
 }
 
 
-int psk_demodulate(psk_t *modem, uint8_t **data, size_t *datalen, double *samples, size_t sampleslen) {
+int pskclk_demodulate(pskclk_t *modem, uint8_t **data, size_t *datalen, double *samples, size_t sampleslen) {
 	size_t   ii;
 	size_t   j;
 	int tone_detected;
@@ -300,7 +311,9 @@ int psk_demodulate(psk_t *modem, uint8_t **data, size_t *datalen, double *sample
 		else if( result == SRCFFT_NEED_MORE ) {
 			continue;
 		}
+		
 		//if( modem->verbose ) {
+		//	printf("  ");
 		//	srcfft_printresult(modem->srcfft);
 		//}
 		
@@ -310,18 +323,25 @@ int psk_demodulate(psk_t *modem, uint8_t **data, size_t *datalen, double *sample
 			if( modem->srcfft->detect[j] == modem->demod_fftbin ) {
 				tone_detected = 1;
 				if( modem->verbose ) {
-					printf("  Tone Detected with angle: %lf\n",modem->srcfft->ang[modem->demod_fftbin]);
+					printf("  * %0.1lf with angle %0.1lf\n",modem->srcfft->mag[modem->demod_fftbin],modem->srcfft->ang[modem->demod_fftbin]);
 				}
 			}
 		}
 		
 		if( !tone_detected ) {
-			if( modem->demod_state != PSK_DEMOD_BASE_SEARCH ) {
+			if( modem->verbose ) {
+				printf("    %0.1lf with angle %0.1lf\n",modem->srcfft->mag[modem->demod_fftbin],modem->srcfft->ang[modem->demod_fftbin]);
+			}
+			if( modem->demod_state != PSKCLK_DEMOD_BASE_SEARCH ) {
+				modem->demod_sync_loss += modem->demod_samp_per_fft;
+				if( modem->verbose ) {
+					printf("    Lossing Sync %zu / %zu\n",modem->demod_sync_loss,modem->mod_samp_per_sym);
+				}
 				if( modem->demod_sync_loss >= modem->mod_samp_per_sym ) {
 					if( modem->verbose ) {
-						printf("  Sync lost\n");
+						printf("    Sync lost\n");
 					}
-					modem->demod_state = PSK_DEMOD_BASE_SEARCH;
+					modem->demod_state = PSKCLK_DEMOD_BASE_SEARCH;
 					modem->demod_fft_count = 0;
 				}
 			}
@@ -330,72 +350,87 @@ int psk_demodulate(psk_t *modem, uint8_t **data, size_t *datalen, double *sample
 			modem->demod_sync_loss = 0;
 		}
 		
-		if( modem->demod_state == PSK_DEMOD_BASE_SEARCH ) {
+		if( modem->demod_state == PSKCLK_DEMOD_BASE_SEARCH ) {
 			if( tone_detected ) {
 				modem->demod_base_ang = modem->srcfft->ang[modem->demod_fftbin];
 				modem->demod_fft_count = 1;
-				modem->demod_state = PSK_DEMOD_BASE_ACQUIRE;
+				modem->demod_state = PSKCLK_DEMOD_BASE_ACQUIRE;
 			}
 		}
-		else if( modem->demod_state == PSK_DEMOD_BASE_ACQUIRE ) {
+		else if( modem->demod_state == PSKCLK_DEMOD_BASE_ACQUIRE ) {
 			if( tone_detected ) {
 				if( fabs(modem->srcfft->ang[modem->demod_fftbin] - modem->demod_base_ang) >
 				      ((double)(2*M_PI) / (double)modem->symbol_count) ) {
 					//Angle went off
-					modem->demod_state = PSK_DEMOD_BASE_SEARCH;
+					modem->demod_state = PSKCLK_DEMOD_BASE_SEARCH;
 					modem->demod_fft_count = 0;
 				}
 				else {
 					if( modem->verbose ) {
 						printf("      Base detected\n");
 					}
-					modem->demod_state = PSK_DEMOD_BASE_DETECTED;
+					modem->demod_state = PSKCLK_DEMOD_BASE_DETECTED;
 					modem->demod_fft_count++;
 				}
 			}
 			else {
-				modem->demod_state = PSK_DEMOD_BASE_SEARCH;
+				modem->demod_state = PSKCLK_DEMOD_BASE_SEARCH;
 				modem->demod_fft_count = 0;
 			}
 		}
-		else if( modem->demod_state == PSK_DEMOD_BASE_DETECTED ) {
+		else if( modem->demod_state == PSKCLK_DEMOD_BASE_DETECTED ) {
 			modem->demod_fft_count++;
-			if( modem->demod_fft_count >= modem->demod_fft_per_sym ) {
-				modem->demod_state = PSK_DEMOD_DATA_SEARCH;
+			if( modem->verbose ) {
+				printf("      Base measurement: %zu / %zu\n",modem->demod_fft_count,modem->demod_fft_per_halfsym );
+			}
+			if( modem->demod_fft_count >= modem->demod_fft_per_halfsym ) {
+				modem->demod_state = PSKCLK_DEMOD_DATA_SEARCH;
 				modem->demod_fft_count = 0;
 			}
 			else if( tone_detected &&
 			         fabs(modem->srcfft->ang[modem->demod_fftbin] - modem->demod_base_ang) >
 			           ((double)(2*M_PI) / (double)modem->symbol_count) ) {
-				//Phase changed dramatically change prematurely
-				printf("Premature change from base\n");
+				//Phase changed dramatically and prematurely
+				if( modem->verbose ) {
+					printf("      Premature angle change from base\n");
+					printf("        %0.1lf -> %0.1lf\n",modem->demod_base_ang,modem->srcfft->ang[modem->demod_fftbin]);
+				}
 				modem->demod_data_ang = modem->srcfft->ang[modem->demod_fftbin];
-				modem->demod_state = PSK_DEMOD_DATA_ACQUIRE;
+				modem->demod_state = PSKCLK_DEMOD_DATA_ACQUIRE;
 				modem->demod_fft_count = 1;
 			}
 		}
-		else if( modem->demod_state == PSK_DEMOD_DATA_SEARCH ) {
+		else if( modem->demod_state == PSKCLK_DEMOD_DATA_SEARCH ) {
 			if( tone_detected ) {
 				modem->demod_data_ang = modem->srcfft->ang[modem->demod_fftbin];
-				modem->demod_state = PSK_DEMOD_DATA_ACQUIRE;
+				modem->demod_state = PSKCLK_DEMOD_DATA_ACQUIRE;
+				modem->demod_fft_count = 1;
 			}
 		}
-		else if( modem->demod_state == PSK_DEMOD_DATA_ACQUIRE ) {
+		else if( modem->demod_state == PSKCLK_DEMOD_DATA_ACQUIRE ) {
 			if( tone_detected ) {
 				if( fabs(modem->srcfft->ang[modem->demod_fftbin] - modem->demod_data_ang) >
 				    ((double)(2*M_PI) / (double)modem->symbol_count) ) {
-					//Angle went off
-					modem->demod_state = PSK_DEMOD_BASE_SEARCH;
+					//Phase changed dramatically and prematurely
+					modem->demod_state = PSKCLK_DEMOD_BASE_SEARCH;
 					modem->demod_fft_count = 0;
 				}
 				else {
 					if( modem->verbose ) {
 						printf("      Data detected %lf / %lf\n",modem->demod_base_ang,modem->demod_data_ang);
 					}
-					modem->demod_state = PSK_DEMOD_DATA_DETECTED;
+					modem->demod_state = PSKCLK_DEMOD_DATA_DETECTED;
 					modem->demod_fft_count++;
 					
-					sym = (int)( fabs(modem->demod_data_ang-modem->demod_base_ang) / ((double)(2*M_PI) / (double)modem->symbol_count) );
+					sym = (int)round( fabs(modem->demod_data_ang-modem->demod_base_ang) / ((double)(2*M_PI) / (double)modem->symbol_count) );
+					if( modem->verbose ) {
+						printf("      Symbol Calc: %lf = |%0.1lf - %0.1lf| / %0.1lf / %0.1lf\n",fabs(modem->demod_data_ang-modem->demod_base_ang) / ((double)(2*M_PI) / (double)modem->symbol_count),
+						    modem->demod_data_ang,
+						    modem->demod_base_ang,
+						    (double)(2*M_PI),(double)modem->symbol_count);
+						printf("      WTF: %d\n",sym);
+						printf("----->Symbol: 0x%02x\n",sym);
+					}
 					putbits(modem->demod_bytes, sizeof(modem->demod_bytes), modem->demod_bit_count, modem->bit_per_symbol, sym);
 					modem->demod_bit_count = modem->demod_bit_count + modem->bit_per_symbol;
 					if( modem->demod_bit_count >= 8 ) {
@@ -417,27 +452,31 @@ int psk_demodulate(psk_t *modem, uint8_t **data, size_t *datalen, double *sample
 				}
 			}
 			else {
-				modem->demod_state = PSK_DEMOD_BASE_SEARCH;
+				modem->demod_state = PSKCLK_DEMOD_BASE_SEARCH;
 				modem->demod_fft_count = 0;
 			}
 		}
-		else if( modem->demod_state == PSK_DEMOD_DATA_DETECTED ) {
+		else if( modem->demod_state == PSKCLK_DEMOD_DATA_DETECTED ) {
 			modem->demod_fft_count++;
-			if( modem->demod_fft_count >= modem->demod_fft_per_sym ) {
-				modem->demod_state = PSK_DEMOD_DATA_SEARCH;
+			if( modem->verbose ) {
+				printf("      Data measurement: %zu / %zu\n",modem->demod_fft_count,modem->demod_fft_per_halfsym );
+			}
+			if( modem->demod_fft_count >= modem->demod_fft_per_halfsym ) {
+				modem->demod_state = PSKCLK_DEMOD_BASE_SEARCH;
 				modem->demod_fft_count = 0;
 			}
-			/*
 			else if( tone_detected &&
 			         fabs(modem->srcfft->ang[modem->demod_fftbin] - modem->demod_data_ang) >
 			           ((double)(2*M_PI) / (double)modem->symbol_count) ) {
 				//Phase changed dramatically change prematurely
-				printf("Premature change from data\n");
+				if( modem->verbose ) {
+					printf("      Premature angle change from data\n");
+					printf("        %0.1lf -> %0.1lf\n",modem->demod_data_ang,modem->srcfft->ang[modem->demod_fftbin]);
+				}
 				modem->demod_base_ang = modem->srcfft->ang[modem->demod_fftbin];
-				modem->demod_state = PSK_DEMOD_BASE_ACQUIRE;
+				modem->demod_state = PSKCLK_DEMOD_BASE_ACQUIRE;
 				modem->demod_fft_count = 1;
 			}
-			*/
 		}
 	}
 	
@@ -453,4 +492,4 @@ int psk_demodulate(psk_t *modem, uint8_t **data, size_t *datalen, double *sample
 	return 0;
 }
 
-#endif //PSK_IMPLEMENTATION
+#endif //PSKCLK_IMPLEMENTATION
