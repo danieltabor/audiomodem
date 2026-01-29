@@ -28,6 +28,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <time.h>
 
 #define BITOPS_IMPLEMENTATION
 #define CORR_IMPLEMENTATION
@@ -44,29 +45,31 @@ void usage(char* cmd) {
 		filename--;
 	}
 	printf("Usage: %s [-h] [-v] [-s symbol.wav]\n",filename);
-	printf("  [-mod | -demod] -i inpath -o outpath\n");
+	printf("  [-mod | -demod] [-n noise_amplitude]\n");
+	printf("  -i inpath -o outpath\n");
 	printf("\n");
 	exit(0);
 }
 
 int main(int argc, char** argv) {
-	SNDFILE* sndfile;
-	SF_INFO sfinfo;
+	SNDFILE    *sndfile;
+	SF_INFO     sfinfo;
 	corr_sym_t *syms = 0;
 	size_t      symslen = 0;
-	size_t i;
-	int verbose = 0;
-	int use_pkt = 0;
-	int do_demod = -1;
-	char* inpath = 0;
-	char* outpath = 0;
-	corr_t *corr;
-	pkt_t  *pkt;
-	int fd;
-	uint8_t *data;
-	size_t   datalen;
-	pktdata_t *pkts;
-	size_t     pktslen;
+	size_t      i;
+	int         verbose = 0;
+	int         use_pkt = 0;
+	int         do_demod = -1;
+	char       *inpath = 0;
+	char       *outpath = 0;
+	double      noise_amp = 0.0;
+	corr_t     *corr;
+	pkt_t      *pkt;
+	int         fd;
+	uint8_t    *data;
+	size_t      datalen;
+	pktdata_t  *pkts;
+	size_t      pktslen;
 	
 	i=1;
 	while( i<argc ) {
@@ -114,6 +117,16 @@ int main(int argc, char** argv) {
 				usage(argv[0]);
 			}
 			do_demod = 1;
+		}
+		else if( !strcmp(argv[i],"-n") ) {
+			++i;
+			if( i >= argc || noise_amp > 0.0 ) {
+				usage(argv[0]);
+			}
+			noise_amp = strtod(argv[i],0);
+			if( noise_amp <= 0.0 || noise_amp > 1.0 ) {
+				usage(argv[0]);
+			}
 		}
 		else if( !strcmp(argv[i],"-i") ) {
 			if( ++i >= argc || inpath != 0 ) {
@@ -213,6 +226,26 @@ int main(int argc, char** argv) {
 			printf("Failed to open: %s\n",outpath);
 			return -1;
 		}
+		
+		if( noise_amp > 0.0 ) {
+			//Seed random generator
+			struct timespec ts;
+			if( clock_gettime(CLOCK_MONOTONIC,&ts) ) {
+				printf("Failed to get time\n");
+				exit(0);
+			}
+			srandom(ts.tv_nsec);
+			
+			//Generate 1 second of noise
+			for( i=0; i<8000; i++ ) {
+				double noise_sample = ((double)(random()-0x40000000) / 0x40000000)*noise_amp;
+				if( sf_writef_double(sndfile,&noise_sample,1) != 1 ) {
+					printf("Write error\n");
+					return -1;
+				}
+			}
+		}
+		
 		for(;;) {
 			bufferlen = read(fd,buffer,sizeof(buffer));
 			if( bufferlen < 0 ) {
@@ -228,11 +261,35 @@ int main(int argc, char** argv) {
 				printf("Modulation failed\n");
 				return -1;
 			}
+			if( noise_amp > 0.0 ) {
+				for( i=0; i<sampleslen; i++ ) {
+					double noise_sample = ((double)(random()-0x40000000) / 0x40000000)*noise_amp;
+					samples[i] = samples[i] + noise_sample;
+					if( samples[i] > 1.0 ) {
+						samples[i] = 1.0;
+					}
+					else if( samples[i] < -1.0 ) {
+						samples[i] = -1.0;
+					}
+				}
+			}
 			if( sf_writef_double(sndfile,samples,sampleslen) != sampleslen ) {
 				printf("Write error\n");
 				return -1;
 			}
 		}
+		
+		if( noise_amp > 0.0 ) {
+			//Generate 1 second of noise
+			for( i=0; i<8000; i++ ) {
+				double noise_sample = ((double)(random()-0x40000000) / 0x40000000)*noise_amp;
+				if( sf_writef_double(sndfile,&noise_sample,1) != 1) {
+					printf("Write error\n");
+					return -1;
+				}
+			}
+		}
+		
 		close(fd);
 		sf_close(sndfile);
 	}

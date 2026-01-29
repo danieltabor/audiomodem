@@ -30,6 +30,7 @@
 #include <string.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <time.h>
 
 #define BITOPS_IMPLEMENTATION
 #define FSKCALIBRATE_IMPLEMENTATION
@@ -60,7 +61,7 @@ void usage(char* cmd) {
 	}
 	printf("Usage: %s [-h] [-v] [-p] [-fsk | -fskclk | -ook | -pskclk | -cfsk | -cpsk | -cfpsk]\n",filename);
 	printf("  [-s samplerate] [-r bitrate] [-bw bandwidth] [-c symbol_count] [-f frequency]\n");
-	printf("  [-i inpath | -m \"message\"] -o output.wav\n");
+	printf("  [-n noise_amplitude] [-i inpath | -m \"message\"] -o output.wav\n");
 	printf("\n");
 	printf("Defaults:\n");
 	printf("  samplerate: based on bandwidth\n");
@@ -87,6 +88,7 @@ int main(int argc, char** argv) {
 	int fd;
 	int verbose = 0;
 	int use_pkt = 0;
+	double noise_amp = 0.0;
 	modemopt_t modemopt = OPT_NONE;
 	size_t samplerate = 0;
 	size_t bitrate = 0;
@@ -207,6 +209,16 @@ int main(int argc, char** argv) {
 			}
 			outpath = argv[i];
 		}
+		else if( !strcmp(argv[i],"-n") ) {
+			++i;
+			if( i >= argc || noise_amp > 0.0 ) {
+				usage(argv[0]);
+			}
+			noise_amp = strtod(argv[i],0);
+			if( noise_amp <= 0.0 || noise_amp > 1.0 ) {
+				usage(argv[0]);
+			}
+		}
 		else if( !strcmp(argv[i],"-i") ) {
 			++i;
 			if( i >= argc || inpath || data ) {
@@ -315,6 +327,25 @@ int main(int argc, char** argv) {
 		audiomodem_printinfo(modem);
 	}
 	
+	if( noise_amp > 0.0 ) {
+		//Seed random generator
+		struct timespec ts;
+		if( clock_gettime(CLOCK_MONOTONIC,&ts) ) {
+			printf("Failed to get time\n");
+			exit(0);
+		}
+		srandom(ts.tv_nsec);
+
+		//Generate 1 second of noise
+		for( i=0; i<8000; i++ ) {
+			double noise_sample = ((double)(random()-0x40000000) / 0x40000000)*noise_amp;
+			if( sf_writef_double(sndfile,&noise_sample,1) != 1 ) {
+				printf("Write error\n");
+				return -1;
+			}
+		}
+	}
+	
 	if( inpath ) {
 		fd = open(inpath,O_RDONLY);
 		if( fd < 0 ) {
@@ -334,6 +365,18 @@ int main(int argc, char** argv) {
 				printf("Failed to generate audio\n");
 				exit(0);
 			}
+			if( noise_amp > 0.0 ) {
+				for( i=0; i<samples_len; i++ ) {
+					double noise_sample = ((double)(random()-0x40000000) / 0x40000000)*noise_amp;
+					samples[i] = samples[i] + noise_sample;
+					if( samples[i] > 1.0 ) {
+						samples[i] = 1.0;
+					}
+					else if( samples[i] < -1.0 ) {
+						samples[i] = -1.0;
+					}
+				}
+			}
 			sf_writef_double(sndfile,samples,samples_len);
 		}
 		free(data);
@@ -343,7 +386,30 @@ int main(int argc, char** argv) {
 			printf("Failed to generate audio\n");
 			exit(0);
 		}
+		if( noise_amp > 0.0 ) {
+			for( i=0; i<samples_len; i++ ) {
+				double noise_sample = ((double)(random()-0x40000000) / 0x40000000)*noise_amp;
+				samples[i] = samples[i] + noise_sample;
+				if( samples[i] > 1.0 ) {
+					samples[i] = 1.0;
+				}
+				else if( samples[i] < -1.0 ) {
+					samples[i] = -1.0;
+				}
+			}
+		}
 		sf_writef_double(sndfile,samples,samples_len);
+	}
+	
+	if( noise_amp > 0.0 ) {
+		//Generate 1 second of noise
+		for( i=0; i<8000; i++ ) {
+			double noise_sample = ((double)(random()-0x40000000) / 0x40000000)*noise_amp;
+			if( sf_writef_double(sndfile,&noise_sample,1) != 1) {
+				printf("Write error\n");
+				return -1;
+			}
+		}
 	}
 	
 	if( modem ) {
