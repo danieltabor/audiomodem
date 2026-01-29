@@ -90,7 +90,7 @@ Demodulate the audio in samples/sampleslen to an array of bytes in data/datalen.
   ```
   Usage: mod [-h] [-v] [-p] [-fsk | -fskclk | -ook | -pskclk | -cfsk | -cpsk | -cfpsk]
   [-s samplerate] [-r bitrate] [-bw bandwidth] [-c symbol_count] [-f frequency]
-  [-i inpath | -m "message"] -o output.wav
+  [-n noise_amplitude] [-i inpath | -m "message"] -o output.wav
   
   Defaults:
     samplerate: based on bandwidth
@@ -138,5 +138,6 @@ Demodulate the audio in samples/sampleslen to an array of bytes in data/datalen.
   Utilizes the generic capabilities of the `corr` modem by using specfied WAV files for symbols.
   ```
   Usage: generic [-h] [-v] [-s symbol.wav]
-    [-mod | -demod] -i inpath -o outpath
+    [-mod | -demod] [-n noise_amplitude]
+    -i inpath -o outpath
   ```
